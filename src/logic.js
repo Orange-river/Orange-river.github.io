@@ -1,259 +1,299 @@
-/**
- * 纯逻辑层：不依赖画布/DOM/wx，可被 Node 直接 require 做单元测试。
- * 三国小小兵玩法：左右两路兵牌收编 + 红兵潮/武将持续群殴。
- * 战斗拆成独立的我方射击伤害与敌方近战伤害；关卡仿真和实战共用 battleStep。
- */
 (function (global) {
   var CR = (global.CR = global.CR || {})
-  var CFG = CR.CONFIG
+  var C = CR.CONFIG
+  var CONTENT = CR.Content
 
-  function clamp (v, min, max) {
-    return v < min ? min : (v > max ? max : v)
+  // 唯一伤害入口：我方射击与敌方近战完全独立；大军伤亡只取决于接敌上限和敌方攻速
+  // enemyUnits 是敌潮人数；武将按 warriorUnits 折算接敌面，避免大军被自身DPS放大反噬
+  function battleStep (state, dt, opts) {
+    opts = opts || {}
+    var playerHp = state.playerHp
+    var playerMaxHpPerUnit = state.playerMaxHpPerUnit || 1
+    var playerDamage = state.playerDamage || 1
+    var enemyHp = state.enemyHp
+    var enemyMaxHp = Math.max(1, state.enemyMaxHp || state.enemyHp)
+    var enemyUnits = Math.max(1, Math.round(state.enemyUnits || 1))
+    var meleeCap = Math.min(enemyUnits, Math.max(1, Math.round(opts.meleeCap || 20)))
+    var dps = Math.max(0, playerHp / playerMaxHpPerUnit) * C.fireRatePerUnit * playerDamage
+    dps *= opts.damageMultiplier || 1
+    var unitType = opts.unitType || 'shield'
+    var enemyType = opts.enemyType || 'shield'
+    var counter = CONTENT.unitTypes[unitType] && CONTENT.unitTypes[unitType].counter === enemyType
+      ? C.counterAdvantage
+      : (CONTENT.unitTypes[enemyType] && CONTENT.unitTypes[enemyType].counter === unitType ? C.counterDisadvantage : 1)
+    dps *= counter
+    var enemyDps = meleeCap * C.enemyMeleeRatePerUnit * (opts.enemyMeleeRateMultiplier || 1)
+    enemyDps *= opts.incomingMultiplier || 1
+    enemyHp = Math.max(0, enemyHp - dps * dt)
+    playerHp = Math.max(0, playerHp - enemyDps * dt)
+    state.playerHp = playerHp
+    state.enemyHp = enemyHp
+    state.playerCount = Math.max(0, Math.ceil(playerHp / playerMaxHpPerUnit))
+    state.enemyCount = Math.max(0, Math.ceil(enemyHp / enemyMaxHp * enemyUnits))
+    state.playerDamageDone = (state.playerDamageDone || 0) + dps * dt
+    state.enemyDamageDone = (state.enemyDamageDone || 0) + enemyDps * dt
+    state.dead = playerHp <= 0
+    state.won = enemyHp <= 0
+    return state
   }
 
-  // 可复现的种子随机（mulberry32），同一关卡序号生成稳定布局
-  function mulberry32 (seed) {
-    var a = seed >>> 0
+  function applyArmyGate (count, hp, hpPerUnit, option) {
+    var nextCount = option.op === 'mul'
+      ? Math.max(1, Math.round(count * option.value))
+      : Math.max(0, count + option.value)
+    var delta = nextCount - count
+    return { count: nextCount, hp: Math.max(0, hp + delta * hpPerUnit), delta: delta }
+  }
+
+  function buildModifiers (equipment, talents) {
+    var mods = { damage: 1, fireRate: 1, incoming: 1, hpPerUnit: 0, recruit: 1, coins: 1 }
+    var all = (equipment || []).concat(talents || [])
+    for (var i = 0; i < all.length; i++) {
+      var id = all[i]
+      var def = null
+      var pools = [CONTENT.equipment, CONTENT.talents]
+      for (var p = 0; p < pools.length && !def; p++) {
+        for (var j = 0; j < pools[p].length; j++) if (pools[p][j].id === id) def = pools[p][j]
+      }
+      if (!def) continue
+      if (def.damage) mods.damage += def.damage
+      if (def.fireRate) mods.fireRate += def.fireRate
+      if (def.incoming) mods.incoming = Math.max(0.2, mods.incoming + def.incoming)
+      if (def.hp) mods.hpPerUnit += def.hp
+      if (def.recruit) mods.recruit += def.recruit
+      if (def.coins) mods.coins += def.coins
+    }
+    return mods
+  }
+
+  function talentChoices (levelIndex, owned) {
+    var available = CONTENT.talents.filter(function (t) { return owned.indexOf(t.id) < 0 })
+    var result = []
+    var cursor = (levelIndex * 2) % Math.max(1, available.length)
+    while (available.length && result.length < Math.min(3, available.length + result.length)) {
+      result.push(available.splice(cursor % available.length, 1)[0])
+      cursor += 2
+      if (result.length >= 3) break
+    }
+    return result
+  }
+
+  function randomEvent (levelIndex, slot) {
+    return CONTENT.events[Math.floor(rng(levelIndex * 97 + slot * 17)() * CONTENT.events.length)]
+  }
+
+  // 1..depth 排布纵深：后排不能在同一帧瞬间全部接敌
+  function formation (count, w, h) {
+    var spacing = w * C.unitSpacingRatio
+    var perRow = Math.max(4, Math.floor((w * 0.52) / spacing))
+    var rows = Math.ceil(count / perRow)
+    var depth = rows * spacing
+    var top = h * C.playerLineRatio - Math.min(h * C.formationDepthRatio, depth)
+    return { perRow: perRow, spacing: spacing, rows: rows, top: top }
+  }
+
+  // 确定性种子：同一关刷新布局一致，方便玩家背板与调优
+  function rng (seed) {
+    var s = seed >>> 0
     return function () {
-      a |= 0; a = (a + 0x6D2B79F5) | 0
-      var t = Math.imul(a ^ (a >>> 15), 1 | a)
+      s = (s + 0x6D2B79F5) | 0
+      var t = Math.imul(s ^ (s >>> 15), 1 | s)
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296
     }
   }
 
-  function randRange (rng, min, max) { return min + rng() * (max - min) }
-  function pick (rng, arr) { return arr[Math.floor(rng() * arr.length)] }
-
-  function applyGate (count, option) {
-    var c = count
-    if (option.op === '*') c = c * option.value
-    else if (option.op === '+') c = c + option.value
-    else if (option.op === '-') c = c - option.value
-    return Math.max(0, Math.round(c))
+  function hpToCount (hp, hpPerUnit) {
+    return Math.max(0, Math.ceil(hp / Math.max(1, hpPerUnit)))
   }
 
-  function gateLabel (option) {
-    if (option.op === '*') return '×' + option.value
-    if (option.op === '-') return '−' + option.value
-    return '+' + option.value
+  // 兵牌两侧循环展开，保证“左边连续+1、右边高值牌”的收兵选择一直存在
+  function makePickups (level, endZ, random) {
+    var arr = []
+    var i = 0
+    for (var z = C.pickupFirstZ; z < endZ; z += C.pickupSpacing) {
+      var big = C.rightBigValues[(i + level) % C.rightBigValues.length]
+      arr.push({ side: 'L', z: z, value: C.leftValue })
+      arr.push({ side: 'R', z: z, value: big })
+      i++
+    }
+    return arr
   }
 
-  // 每级攻击让单发子弹伤害增加 25%，不改变射速
-  function attackMultiplier (attackLevel, cfg) {
-    cfg = cfg || CFG
-    return 1 + Math.max(0, attackLevel || 0) * cfg.attackDamagePerUpgrade
-  }
+  function buildLevel (level, scale) {
+    var random = rng(1000 + level * 137)
+    var lv = level + 1
+    var z = 0
+    var objects = []
+    var path = [{ count: C.startCount, z: 0, label: '起点' }]
+    var n = C.startCount
+    var bigValueSum = 0
+    var smallValueSum = 0
+    var bigCount = 0
 
-  function armyHp (army) {
-    if (typeof army.hp === 'number') return army.hp
-    return Math.max(0, army.count) * (army.hpPerUnit || 1)
-  }
+    function advance (dz) {
+      z += dz
+      // 按右侧高值兵牌估算最优路线兵力（生成器只做难度标定；实战仍需手动收兵）
+      var startZ = z - dz
+      var gained = 0
+      for (var pz = C.pickupFirstZ; pz < z; pz += C.pickupSpacing) {
+        if (pz > startZ) {
+          var idx = Math.round((pz - C.pickupFirstZ) / C.pickupSpacing)
+          var value = C.rightBigValues[(idx + level) % C.rightBigValues.length]
+          gained += value
+          bigValueSum += value
+          smallValueSum += C.leftValue
+          bigCount++
+        }
+      }
+      n += gained
+      path.push({ count: n, z: Math.round(z), label: '收兵后', gained: gained })
+    }
 
-  // 收编同时增加人数和总生命；体质升级后，新兵也使用当前每兵生命
-  function addArmyUnits (army, value) {
-    if (typeof army.addUnits === 'function') { army.addUnits(value); return }
-    army.count = Math.max(0, army.count + value)
-    if (typeof army.hp === 'number') army.hp += value * (army.hpPerUnit || 1)
-  }
+    function wave (size) {
+      var hp = Math.round(size * scale)
+      objects.push({ type: 'wave', z: Math.round(z), size: size, hp: hp, maxHp: hp })
+      path.push({ count: n, z: Math.round(z), label: '兵潮×' + size })
+    }
 
-  // 敌方伤害只扣总生命；人数由总生命÷每兵生命向上取整，避免小数十进制兵力
-  function damageArmy (army, amount) {
-    if (typeof army.takeDamage === 'function') { army.takeDamage(amount); return }
-    if (typeof army.hp === 'number') {
-      army.hp = Math.max(0, army.hp - amount)
-      army.count = army.hp <= 0 ? 0 : Math.ceil(army.hp / (army.hpPerUnit || 1) - 1e-9)
-    } else {
-      army.count = Math.max(0, army.count - amount)
+    function general (size, boss) {
+      var hp = Math.round(size * scale * 1.15)
+      objects.push({ type: 'general', z: Math.round(z), size: size, hp: hp, maxHp: hp, boss: !!boss })
+      path.push({ count: n, z: Math.round(z), label: boss ? '最终Boss×' + size : '武将×' + size })
+    }
+
+    advance(1500 + random() * 350)
+    wave(13 + lv * 3 + Math.floor(n * 0.1))
+    advance(1050 + random() * 300)
+    general(24 + lv * 4 + Math.floor(n * 0.18), false)
+    advance(1400 + random() * 400)
+    wave(22 + lv * 4 + Math.floor(n * 0.16))
+    advance(1100 + random() * 300)
+    // 最后一名武将就是最终Boss：死亡当帧直接通关
+    general(40 + lv * 6 + Math.floor(n * 0.32), true)
+    advance(760)
+    objects.push({ type: 'castle', z: Math.round(z) })
+
+    return {
+      levelIndex: level,
+      length: Math.round(z),
+      objects: objects,
+      pickups: makePickups(level, z - 500, random),
+      path: path,
+      start: C.startCount,
+      scale: scale,
+      stats: { bigValueSum: bigValueSum, smallValueSum: smallValueSum, bigCount: bigCount }
     }
   }
 
-  /**
-   * 单个战斗帧，仿真和实战唯一伤害入口。
-   * 我方输出随人数、射速、攻击等级增长；敌方近战输出随“实际接敌对数”增长。
-   * 关键：我方攻击越高不会反噬自己，大军伤亡也不再等于自己的射击伤害。
-   */
-  function battleStep (army, enemyHp, dt, melee, attackLevel, cfg) {
-    cfg = cfg || CFG
-    var count = Math.max(0, army.count)
-    var damage = Math.min(enemyHp, count * cfg.fireRatePerUnit * attackMultiplier(attackLevel, cfg) * dt)
-    var taken = 0
-    if (melee && count > 0 && enemyHp > 0) {
-      var engagedPairs = Math.min(count, enemyHp)
-      taken = Math.min(armyHp(army), engagedPairs * cfg.enemyMeleeRatePerUnit * dt)
-      damageArmy(army, taken)
+  function countPickupsBefore (pickups, z, side) {
+    var sum = 0
+    for (var i = 0; i < pickups.length; i++) {
+      var p = pickups[i]
+      if (p.z < z && p.side === side) sum += p.value
     }
-    return { damage: damage, taken: taken }
+    return sum
   }
 
-  // 离散仿真一个战斗节点，使用与 Level.update 相同的远程→冲锋→近战顺序
-  function simulateBattle (startCount, enemyHp, options) {
-    options = options || {}
-    var cfg = options.config || CFG
-    var hpPerUnit = Math.max(1, options.hpPerUnit || 1)
-    var army = { count: startCount, hpPerUnit: hpPerUnit, hp: startCount * hpPerUnit }
-    var attackLevel = options.attackLevel || 0
-    var distance = cfg.engageRange
-    var melee = false
-    var hp = enemyHp
+  // 与实战 Level.update 共用 battleStep，保证“可解性仿真”不会与真实伤害口径漂移
+  function simulateCombat (armyHp, hpPerUnit, damage, obj) {
+    var st = {
+      playerHp: armyHp,
+      playerMaxHpPerUnit: hpPerUnit,
+      playerDamage: damage,
+      enemyHp: obj.hp,
+      enemyMaxHp: obj.maxHp,
+      enemyUnits: obj.size
+    }
+    var chargeTime = Math.max(0, (C.engageRange - C.contactRange) / C.enemyChargeSpeed)
+    var elapsed = 0
     var dt = 1 / 120
-    var steps = 0
-    while (hp > 0 && army.hp > 0 && steps < 60000) {
-      if (!melee) {
-        distance -= cfg.enemyChargeSpeed * dt
-        if (distance <= 0) melee = true
+    var opts = {
+      meleeCap: obj.type === 'general' ? 34 : 18,
+      unitType: 'shield',
+      enemyType: obj.unitType || 'shield'
+    }
+    // 敌军先冲锋，我方远程无损输出；进入近战后才按接敌对数受伤
+    while (elapsed < chargeTime && !st.won) {
+      battleStep(st, Math.min(dt, chargeTime - elapsed), opts)
+      elapsed += dt
+    }
+    var guard = 0
+    while (!st.won && !st.dead && guard < 120 * 180) {
+      battleStep(st, dt, opts)
+      guard++
+    }
+    return st
+  }
+
+  // 满吃高值兵牌的“可解性”检查；若失败则下调整关难度后重新生成
+  function verifyLevel (data) {
+    var hpPerUnit = 1
+    var damage = 1
+    var army = C.startCount * hpPerUnit
+    var results = []
+    for (var i = 0; i < data.objects.length; i++) {
+      var obj = data.objects[i]
+      if (obj.type === 'castle') continue
+      army += countPickupsBefore(data.pickups, obj.z, 'R') * hpPerUnit
+      var st = simulateCombat(army, hpPerUnit, damage, obj)
+      results.push({ z: obj.z, type: obj.type, remainHp: st.playerHp, remainCount: st.playerCount, won: st.won })
+      if (!st.won || st.playerHp <= 0) return { ok: false, results: results }
+      army = st.playerHp
+    }
+    return { ok: true, results: results, remainHp: army, remainCount: hpToCount(army, hpPerUnit) }
+  }
+
+  function generateLevel (level) {
+    // 难度随关卡上升，但始终保证“满吃路线”能通关
+    var scale = 0.36 + level * 0.05
+    for (var attempt = 0; attempt < 40; attempt++) {
+      var data = buildLevel(level, scale)
+      data.mode = CONTENT.modes[level % CONTENT.modes.length].id
+      var gates = []
+      var combatObjects = data.objects.filter(function (o) { return o.type === 'wave' || o.type === 'general' })
+      for (var i = 0; i < combatObjects.length; i++) {
+        var obj = combatObjects[i]
+        obj.unitType = CONTENT.modes.length ? ['shield', 'archer', 'cavalry'][(level + i + 1) % 3] : 'shield'
+        if (obj.type === 'general') obj.skillClock = 0
+        if (obj.boss) obj.phase = 1
+        var before = obj.z - 260
+        gates.push({ type: 'armyGate', z: Math.max(250, before - 320), left: C.armyGateSides[0], right: C.armyGateSides[1] })
+        gates.push({
+          type: 'unitGate', z: Math.max(420, before - 120),
+          left: C.unitGateTypes[(level + i) % 3],
+          right: C.unitGateTypes[(level + i + 1) % 3]
+        })
       }
-      var result = battleStep(army, hp, dt, melee, attackLevel, cfg)
-      hp = Math.max(0, hp - result.damage)
-      steps++
-    }
-    return {
-      won: hp <= 0 && army.hp > 0,
-      count: army.count,
-      hp: army.hp,
-      lost: startCount - army.count,
-      enemyHp: hp,
-      steps: steps
-    }
-  }
-
-  // 保留查询接口：返回一个节点的人数减员，实际公式由 simulateBattle 决定
-  function battleLoss (player, hp, options) {
-    return simulateBattle(player, hp, options).lost
-  }
-
-  /**
-   * 人群阵型的 3D 偏移（以队伍中心为原点）：dx 横向、dz 纵深。
-   * 最近一排 dz=0（前排），往后逐排增大，透视投影后形成近大远小、有厚度的盘。
-   */
-  function formationOffsets (drawN, gapX, gapZ) {
-    var out = []
-    if (drawN <= 0) return out
-    var cols = Math.round(clamp(Math.sqrt(drawN) * 1.2, 4, 12))
-    var rows = Math.ceil(drawN / cols)
-    var n = 0
-    for (var r = 0; r < rows && n < drawN; r++) {
-      var inThisRow = Math.min(cols, drawN - n)
-      var rowWidth = (inThisRow - 1) * gapX
-      var dz = (rows - 1 - r) * gapZ
-      for (var c = 0; c < inThisRow; c++) {
-        out.push({ dx: -rowWidth / 2 + c * gapX, dz: dz })
-        n++
+      for (var e = 0; e < 2; e++) {
+        gates.push({ type: 'event', z: 950 + e * 1750 + (level % 3) * 90, event: randomEvent(level, e) })
       }
-    }
-    return out
-  }
-
-  // 每关两波兵潮、两名武将；最后一名武将就是最终 Boss，阵亡即通关
-  function nodeTemplate (levelIndex) {
-    return [
-      { type: 'wave', z: 1500, factor: 1.10 },
-      { type: 'general', z: 2350, hpFactor: 1.20 },
-      { type: 'wave', z: 3050, factor: 1.15 },
-      { type: 'general', z: 3800, hpFactor: 1.35, boss: true }
-    ]
-  }
-
-  /**
-   * 按给定难度缩放生成一关，并离散仿真“吃满全部兵牌”的最优路线是否可解。
-   * scale 在重试时逐次下调，直到最优路线确认能通关。
-   */
-  function buildLevel (levelIndex, scale) {
-    var rng = mulberry32(20261106 + levelIndex * 9973)
-    var start = CFG.startCount + Math.min(levelIndex, 6) * 3
-    var castleZ = 4350
-    var items = []
-
-    // 1) 左右两路连续兵牌：每 4 块里前 3 块蓝 +1、第 4 块黄色高值，逼玩家左右移动
-    var z = CFG.pickupFirstZ
-    var idx = 0
-    var pickups = []
-    while (z < castleZ - 280) {
-      var isRight = (idx % 4 === 3)
-      var value = isRight ? CFG.rightBigValues[idx % CFG.rightBigValues.length] : CFG.leftValue
-      var pk = {
-        type: 'pickup', z: Math.round(z), side: isRight ? 'R' : 'L',
-        op: '+', value: value, label: '+' + value, _done: false
+      data.objects = data.objects.concat(gates).sort(function (a, b) { return a.z - b.z })
+      var check = verifyLevel(data)
+      if (check.ok) {
+        data.verification = check
+        return data
       }
-      pickups.push(pk)
-      z += CFG.pickupSpacing
-      idx++
+      scale *= 0.85
     }
-
-    // 2) 逐节点设定强度并做可解性仿真，伤害公式与运行时完全一致
-    var diff = clamp((1 + levelIndex * 0.05), 1, 1.3) * scale
-    var nodes = nodeTemplate(levelIndex)
-    var sim = start
-    var pi = 0
-    var solvable = true
-    for (var ni = 0; ni < nodes.length; ni++) {
-      var nd = nodes[ni]
-      // 只计入交战开始前能收到的兵牌：进入交战纵深即驻足群殴，前方 engageRange 内的牌本节点收不到
-      while (pi < pickups.length && pickups[pi].z <= nd.z - CFG.engageRange) { sim += pickups[pi].value; pi++ }
-      var hp
-      if (nd.type === 'wave') {
-        nd.count = Math.max(4, Math.round(sim * nd.factor * diff))
-        nd.centerRatio = 0.5
-        nd.widthRatio = CFG.waveColsRatio
-        hp = nd.count
-      } else {
-        nd.hp = Math.max(20, Math.round(sim * nd.hpFactor * diff))
-        nd.maxHp = nd.hp
-        nd.centerRatio = 0.5
-        nd.widthRatio = 0.5
-        hp = nd.hp
-      }
-      var result = simulateBattle(sim, hp)
-      sim = result.count
-      if (!result.won || sim <= 0) { sim = 0; solvable = false; break }
-    }
-
-    // 3) 合并并按纵深排序
-    items = pickups.concat(nodes)
-    items.push({ type: 'castle', z: castleZ })
-    items.sort(function (a, b) { return a.z - b.z })
-
-    return {
-      level: levelIndex,
-      start: start,
-      length: castleZ,
-      items: items,
-      bestPossible: Math.round(sim),
-      solvable: solvable
-    }
-  }
-
-  // 逐档下调难度直到最优路线可解（正常首轮即过，重试只是兜底）
-  function generateLevel (levelIndex) {
-    var scale = 1
-    var data = buildLevel(levelIndex, scale)
-    var tries = 0
-    while (!data.solvable && tries < 8) {
-      scale *= 0.8
-      data = buildLevel(levelIndex, scale)
-      tries++
-    }
-    return data
+    // 极端保底：始终返回可玩的布局
+    var fallback = buildLevel(level, 0.1)
+    fallback.mode = CONTENT.modes[level % CONTENT.modes.length].id
+    fallback.verification = verifyLevel(fallback)
+    return fallback
   }
 
   CR.Logic = {
-    clamp: clamp,
-    mulberry32: mulberry32,
-    randRange: randRange,
-    pick: pick,
-    applyGate: applyGate,
-    gateLabel: gateLabel,
-    attackMultiplier: attackMultiplier,
-    armyHp: armyHp,
-    addArmyUnits: addArmyUnits,
-    damageArmy: damageArmy,
     battleStep: battleStep,
-    simulateBattle: simulateBattle,
-    battleLoss: battleLoss,
-    formationOffsets: formationOffsets,
-    buildLevel: buildLevel,
-    generateLevel: generateLevel
+    formation: formation,
+    rng: rng,
+    hpToCount: hpToCount,
+    applyArmyGate: applyArmyGate,
+    buildModifiers: buildModifiers,
+    talentChoices: talentChoices,
+    randomEvent: randomEvent,
+    simulateCombat: simulateCombat,
+    generateLevel: generateLevel,
+    verifyLevel: verifyLevel
   }
-
-  if (typeof module !== 'undefined' && module.exports) module.exports = CR.Logic
 })(typeof GameGlobal !== 'undefined' ? GameGlobal : (typeof window !== 'undefined' ? window : globalThis))
