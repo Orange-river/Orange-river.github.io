@@ -57,6 +57,15 @@
     return { x: (this.w - bw) / 2, y: this.h * yRatio, w: bw, h: bh }
   }
 
+  // 通关后的免费二选一升级按钮
+  Renderer.prototype.upgradeRect = function (kind) {
+    var gap = 12
+    var total = Math.min(360, this.w * 0.88)
+    var bw = (total - gap) / 2
+    var left = (this.w - total) / 2
+    return { x: left + (kind === 'vitality' ? bw + gap : 0), y: this.h * 0.56, w: bw, h: 96 }
+  }
+
   // 翡翠峡谷 + 黄沙跑道背景
   Renderer.prototype.background = function (traveled) {
     var ctx = this.ctx, w = this.w, h = this.h
@@ -455,6 +464,10 @@
     ctx.fill()
     strokeText(ctx, String(Math.max(0, Math.round(hp))), cx, byy - bh * 1.7,
       'bold ' + Math.max(10, Math.round(w * 0.05 * s)) + 'px Arial', '#ffffff')
+    if (item.boss) {
+      strokeText(ctx, '最终BOSS', cx, byy - bh * 3.5,
+        'bold ' + Math.max(10, Math.round(w * 0.045 * s)) + 'px Arial', C.color.gold)
+    }
   }
 
   Renderer.prototype.castle = function (item) {
@@ -579,7 +592,7 @@
     }
   }
 
-  Renderer.prototype.hud = function (levelIndex) {
+  Renderer.prototype.hud = function (levelIndex, player) {
     var ctx = this.ctx
     ctx.fillStyle = 'rgba(0,0,0,0.28)'
     roundRect(ctx, 12, 14, 96, 34, 17)
@@ -589,6 +602,15 @@
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText('第 ' + (levelIndex + 1) + ' 关', 60, 31)
+    if (player) {
+      ctx.fillStyle = 'rgba(0,0,0,0.28)'
+      roundRect(ctx, 12, 54, 214, 30, 15)
+      ctx.fill()
+      ctx.fillStyle = '#fff4c8'
+      ctx.font = 'bold ' + Math.round(this.w * 0.032) + 'px Arial'
+      ctx.textAlign = 'left'
+      ctx.fillText('攻击Lv.' + (player.attackLevel || 0) + '  体质Lv.' + (player.vitalityLevel || 0) + '（每兵' + (player.hpPerUnit || 1) + '血）', 23, 69)
+    }
   }
 
   Renderer.prototype.panel = function () {
@@ -609,6 +631,23 @@
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(text, rect.x + rect.w / 2, rect.y + rect.h / 2)
+  }
+
+  Renderer.prototype.upgradeButton = function (rect, title, detail, color, dark) {
+    var ctx = this.ctx
+    ctx.fillStyle = dark
+    roundRect(ctx, rect.x, rect.y + 4, rect.w, rect.h, 14)
+    ctx.fill()
+    ctx.fillStyle = color
+    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 14)
+    ctx.fill()
+    ctx.fillStyle = '#fff'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.font = 'bold ' + Math.round(this.w * 0.047) + 'px Arial'
+    ctx.fillText(title, rect.x + rect.w / 2, rect.y + rect.h * 0.34)
+    ctx.font = Math.round(this.w * 0.033) + 'px Arial'
+    ctx.fillText(detail, rect.x + rect.w / 2, rect.y + rect.h * 0.7)
   }
 
   Renderer.prototype.title = function (text, y, size, color) {
@@ -639,7 +678,7 @@
     }
     if (player.count > 0) this.player(player)
     this.fx(fx)
-    this.hud(level.levelIndex)
+    this.hud(level.levelIndex, player)
   }
 
   CR.Renderer = Renderer
