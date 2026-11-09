@@ -1,47 +1,7 @@
-/**
- * 渲染层：全部用 Canvas 2D 程序化绘制，无外部图片资源，导入即能跑。
- * 三国小小兵风格：翡翠水晶峡谷 + 黄沙跑道，左右兵牌收编，红兵潮铺满通道，
- * 红袍武将头顶血条，近战时红兵碎成白骨与烟尘。2.5D 透视近大远小。
- */
 (function (global) {
   var CR = (global.CR = global.CR || {})
   var C = CR.CONFIG
-  var L = CR.Logic
-
-  function roundRect (ctx, x, y, w, h, r) {
-    r = Math.min(r, w / 2, h / 2)
-    ctx.beginPath()
-    ctx.moveTo(x + r, y)
-    ctx.arcTo(x + w, y, x + w, y + h, r)
-    ctx.arcTo(x + w, y + h, x, y + h, r)
-    ctx.arcTo(x, y + h, x, y, r)
-    ctx.arcTo(x, y, x + w, y, r)
-    ctx.closePath()
-  }
-
-  function fillEllipse (ctx, x, y, rx, ry, color) {
-    ctx.save()
-    ctx.translate(x, y)
-    ctx.scale(1, ry / rx)
-    ctx.fillStyle = color
-    ctx.beginPath()
-    ctx.arc(0, 0, rx, 0, Math.PI * 2)
-    ctx.closePath()
-    ctx.fill()
-    ctx.restore()
-  }
-
-  function strokeText (ctx, text, x, y, font, fill, align) {
-    ctx.font = font
-    ctx.textAlign = align || 'center'
-    ctx.textBaseline = 'middle'
-    ctx.lineWidth = 5
-    ctx.lineJoin = 'round'
-    ctx.strokeStyle = C.color.hudShadow
-    ctx.strokeText(text, x, y)
-    ctx.fillStyle = fill
-    ctx.fillText(text, x, y)
-  }
+  var COL = C.color
 
   function Renderer (ctx, w, h) {
     this.ctx = ctx
@@ -49,636 +9,785 @@
     this.h = h
   }
 
-  Renderer.prototype.resize = function (w, h) { this.w = w; this.h = h }
-
-  Renderer.prototype.buttonRect = function (yRatio) {
-    var bw = Math.min(280, this.w * 0.66)
-    var bh = 60
-    return { x: (this.w - bw) / 2, y: this.h * yRatio, w: bw, h: bh }
+  Renderer.prototype.resize = function (w, h) {
+    this.w = w
+    this.h = h
   }
 
-  // 通关后的免费二选一升级按钮
-  Renderer.prototype.upgradeRect = function (kind) {
-    var gap = 12
-    var total = Math.min(360, this.w * 0.88)
-    var bw = (total - gap) / 2
-    var left = (this.w - total) / 2
-    return { x: left + (kind === 'vitality' ? bw + gap : 0), y: this.h * 0.56, w: bw, h: 96 }
+  Renderer.prototype.text = function (str, x, y, size, color, align, weight) {
+    var ctx = this.ctx
+    ctx.save()
+    ctx.font = (weight || 'bold') + ' ' + size + 'px "PingFang SC", "Microsoft YaHei", sans-serif'
+    ctx.textAlign = align || 'center'
+    ctx.textBaseline = 'middle'
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = 'rgba(20,30,25,0.65)'
+    ctx.lineWidth = Math.max(2, size * 0.1)
+    ctx.strokeText(str, x, y)
+    ctx.fillStyle = color || COL.text
+    ctx.fillText(str, x, y)
+    ctx.restore()
   }
 
-  // 翡翠峡谷 + 黄沙跑道背景
+  Renderer.prototype.title = function (str, y, ratio, color) {
+    this.text(str, this.w / 2, y, this.w * ratio, color)
+  }
+
+  Renderer.prototype.line = function (str, y, ratio, color) {
+    this.text(str, this.w / 2, y, this.w * ratio, color || COL.text, 'center', 'normal')
+  }
+
+  // ---------- 翡翠峡谷 + 黄沙跑道 ----------
   Renderer.prototype.background = function (traveled) {
-    var ctx = this.ctx, w = this.w, h = this.h
+    var ctx = this.ctx
+    var w = this.w
+    var h = this.h
     var horizon = h * C.horizonRatio
-    var ground = h * C.playerLineRatio
 
-    // 暖黄天空
-    var sky = ctx.createLinearGradient(0, 0, 0, h)
-    sky.addColorStop(0, C.color.skyTop)
-    sky.addColorStop(1, C.color.skyBottom)
+    var sky = ctx.createLinearGradient(0, 0, 0, horizon * 1.4)
+    sky.addColorStop(0, COL.skyTop)
+    sky.addColorStop(1, COL.skyBottom)
     ctx.fillStyle = sky
     ctx.fillRect(0, 0, w, h)
 
-    var N = 24
-    var halfNear = (w / 2) * (1 - 2 * C.trackMarginRatio)
-    var leftPts = []
-    var rightPts = []
-    leftPts.push({ x: w / 2 - halfNear * 1.06, y: h, s: 1 })
-    rightPts.push({ x: w / 2 + halfNear * 1.06, y: h, s: 1 })
-    for (var k = 0; k <= N; k++) {
-      var f = k / N
-      var dz = C.viewFar * f * f
-      var s = C.perspectiveK / (C.perspectiveK + dz)
-      var sy = horizon + (ground - horizon) * s
-      var hw = halfNear * s
-      leftPts.push({ x: w / 2 - hw, y: sy, s: s })
-      rightPts.push({ x: w / 2 + hw, y: sy, s: s })
-    }
-    var vpX = w / 2
-    var vpY = horizon
-
-    // 左右翡翠水晶山壁（屏幕边缘到跑道边界，向消失点收敛）
-    this.drawJadeWall(leftPts, true, vpX, vpY)
-    this.drawJadeWall(rightPts, false, vpX, vpY)
-
-    // 跑道褐色护墙条带
+    // 远山
+    ctx.fillStyle = '#8fcfa8'
     ctx.beginPath()
-    for (var i = 0; i < leftPts.length; i++) {
-      var lp = leftPts[i]
-      var off = 14 * lp.s
-      if (i === 0) ctx.moveTo(lp.x - off, lp.y)
-      else ctx.lineTo(lp.x - off, lp.y)
+    ctx.moveTo(0, horizon)
+    for (var i = 0; i <= 10; i++) {
+      var x = i * w / 10
+      var y = horizon - (i % 2 ? 0.06 : 0.12) * h - Math.sin(i * 2.3) * h * 0.02
+      ctx.lineTo(x, y)
     }
-    for (var j = rightPts.length - 1; j >= 0; j--) ctx.lineTo(rightPts[j].x + 14 * rightPts[j].s, rightPts[j].y)
+    ctx.lineTo(w, horizon)
     ctx.closePath()
-    ctx.fillStyle = C.color.trackWall
     ctx.fill()
 
-    // 黄沙跑道本体
-    ctx.beginPath()
-    for (var a = 0; a < leftPts.length; a++) {
-      if (a === 0) ctx.moveTo(leftPts[a].x, leftPts[a].y)
-      else ctx.lineTo(leftPts[a].x, leftPts[a].y)
-    }
-    for (var b = rightPts.length - 1; b >= 0; b--) ctx.lineTo(rightPts[b].x, rightPts[b].y)
-    ctx.closePath()
-    ctx.fillStyle = C.color.track
-    ctx.fill()
-
-    // 透视石板横线
-    var gap = 150
-    var phase = traveled % gap
-    for (var zz = -gap + phase; zz < C.viewFar; zz += gap) {
-      var dz2 = Math.max(0, zz)
-      var s2 = C.perspectiveK / (C.perspectiveK + dz2)
-      var y2 = horizon + (ground - horizon) * s2
-      var hw2 = halfNear * s2
-      ctx.globalAlpha = 0.12 + 0.2 * s2
-      ctx.strokeStyle = C.color.trackLine
-      ctx.lineWidth = Math.max(0.8, 3 * s2)
+    // 两侧翡翠山壁：大块多边形 + 水晶切面
+    for (var side = 0; side < 2; side++) {
+      var dir = side === 0 ? -1 : 1
+      var baseX = side === 0 ? 0 : w
+      ctx.fillStyle = COL.canyonDark
       ctx.beginPath()
-      ctx.moveTo(w / 2 - hw2 + 4 * s2, y2)
-      ctx.lineTo(w / 2 + hw2 - 4 * s2, y2)
-      ctx.stroke()
-    }
-    ctx.globalAlpha = 1
+      ctx.moveTo(baseX, horizon * 0.55)
+      ctx.lineTo(w / 2 + dir * w * 0.1, horizon)
+      ctx.lineTo(w / 2 + dir * w * 0.17, h * 0.56)
+      ctx.lineTo(baseX, h)
+      ctx.closePath()
+      ctx.fill()
 
-    // 中央一条虚线纵轴，提示行进方向
-    ctx.strokeStyle = 'rgba(120,84,40,0.18)'
-    ctx.lineWidth = 2
-    ctx.setLineDash([10, 14])
-    ctx.beginPath()
-    ctx.moveTo(vpX, vpY)
-    ctx.lineTo(w / 2, h)
-    ctx.stroke()
-    ctx.setLineDash([])
-
-    // 远端景深雾
-    var farS = C.perspectiveK / (C.perspectiveK + C.viewFar)
-    var farY = horizon + (ground - horizon) * farS
-    var fogGrad = ctx.createLinearGradient(0, farY - h * 0.02, 0, farY + h * 0.1)
-    fogGrad.addColorStop(0, 'rgba(238,224,180,0.45)')
-    fogGrad.addColorStop(1, 'rgba(238,224,180,0)')
-    ctx.fillStyle = fogGrad
-    ctx.fillRect(0, farY - h * 0.02, w, h * 0.12)
-  }
-
-  // 单侧翡翠山壁：多边形 + 水平渐变 + 向消失点收敛的水晶棱线
-  Renderer.prototype.drawJadeWall = function (edgePts, isLeft, vpX, vpY) {
-    var ctx = this.ctx, w = this.w, h = this.h
-    var near = edgePts[0]
-    ctx.beginPath()
-    if (isLeft) {
-      ctx.moveTo(0, h)
-      ctx.lineTo(0, vpY)
-      ctx.lineTo(vpX, vpY)
-      ctx.lineTo(near.x, h)
-    } else {
-      ctx.moveTo(w, h)
-      ctx.lineTo(w, vpY)
-      ctx.lineTo(vpX, vpY)
-      ctx.lineTo(near.x, h)
-    }
-    ctx.closePath()
-    var g = ctx.createLinearGradient(isLeft ? 0 : w, 0, vpX, 0)
-    g.addColorStop(0, C.color.jadeDark)
-    g.addColorStop(0.6, C.color.jade)
-    g.addColorStop(1, C.color.jadeLight)
-    ctx.fillStyle = g
-    ctx.fill()
-
-    // 水晶切面棱线：从近端边缘等分点汇向消失点
-    ctx.strokeStyle = C.color.jadeShine
-    ctx.lineWidth = 1.5
-    for (var t = 0.2; t <= 0.85; t += 0.2) {
-      var bx = isLeft ? near.x * t : near.x + (w - near.x) * t
-      ctx.beginPath()
-      ctx.moveTo(bx, h)
-      ctx.lineTo(vpX, vpY)
-      ctx.stroke()
-    }
-  }
-
-  // 单个小人：投影 + 暗底 + 肩 + 躯干 + 高光 + 头
-  Renderer.prototype.unit = function (x, y, r, colors, phase) {
-    var ctx = this.ctx
-    var bob = Math.sin(phase) * r * 0.22
-    y += bob
-    fillEllipse(ctx, x, y + r * 1.18, r * 1.0, r * 0.42, 'rgba(0,0,0,0.22)')
-    ctx.fillStyle = colors.dark
-    roundRect(ctx, x - r * 0.9, y - r * 0.72, r * 1.8, r * 1.94, r * 0.74)
-    ctx.fill()
-    ctx.fillStyle = colors.body
-    roundRect(ctx, x - r * 0.86, y - r * 0.66, r * 1.72, r * 0.62, r * 0.3)
-    ctx.fill()
-    roundRect(ctx, x - r * 0.66, y - r * 0.42, r * 1.32, r * 1.3, r * 0.5)
-    ctx.fill()
-    ctx.globalAlpha = 0.5
-    ctx.fillStyle = colors.light
-    roundRect(ctx, x - r * 0.56, y - r * 0.46, r * 0.4, r * 0.9, r * 0.2)
-    ctx.fill()
-    ctx.globalAlpha = 1
-    ctx.fillStyle = colors.skin
-    ctx.beginPath()
-    ctx.arc(x, y - r * 1.08, r * 0.54, 0, Math.PI * 2)
-    ctx.fill()
-    ctx.fillStyle = 'rgba(255,255,255,0.55)'
-    ctx.beginPath()
-    ctx.arc(x - r * 0.16, y - r * 1.22, r * 0.18, 0, Math.PI * 2)
-    ctx.fill()
-  }
-
-  // 椭圆盘人群（玩家用）；兵越多横向间距自动收窄，且整阵约束在跑道内不溢出屏幕
-  Renderer.prototype.crowd = function (centerX, baseZ, count, colors, phase, scaleMul) {
-    var w = this.w
-    var level = this.level
-    var drawN = Math.min(count, C.maxDrawnUnits)
-    var cols = Math.round(L.clamp(Math.sqrt(drawN) * 1.2, 4, 12))
-    var tw = level.trackWidth()
-    var tl = level.trackLeft()
-    // 阵型最宽不超过跑道的 92%，兵多时自动压紧横向间距
-    var gapX = Math.min(w * C.formationGapRatio, (tw * 0.92) / Math.max(1, cols - 1))
-    var gapZ = w * C.formationDepthGapRatio
-    var offs = L.formationOffsets(drawN, gapX, gapZ)
-    // 靠边时把整阵中心向内收，保证左右缘都在跑道内
-    var rowW = (cols - 1) * gapX
-    centerX = L.clamp(centerX, tl + rowW / 2 + 2, tl + tw - rowW / 2 - 2)
-    var units = []
-    for (var i = 0; i < offs.length; i++) {
-      var pr = level.project(baseZ + offs[i].dz)
-      var s = pr.s
-      var r = w * C.unitRadiusRatio * s * (scaleMul || 1)
-      units.push({ x: level.projX(centerX + offs[i].dx, s), y: pr.sy, r: r, phase: phase + i * 0.5 })
-    }
-    units.sort(function (a, b) { return a.y - b.y })
-    for (var k = 0; k < units.length; k++) this.unit(units[k].x, units[k].y, units[k].r, colors, units[k].phase)
-    return units
-  }
-
-  // 矩形方阵偏移：把红兵铺成填满通道宽度的人潮
-  function waveOffsets (drawN, widthX, gapX, gapZ) {
-    var cols = Math.max(4, Math.round(widthX / gapX))
-    var rows = Math.ceil(drawN / cols)
-    var out = []
-    var n = 0
-    for (var r = 0; r < rows && n < drawN; r++) {
-      var inRow = Math.min(cols, drawN - n)
-      var rowW = (inRow - 1) * gapX
-      var dz = (rows - 1 - r) * gapZ
-      for (var c = 0; c < inRow; c++) {
-        out.push({ dx: -rowW / 2 + c * gapX, dz: dz })
-        n++
+      for (var j = 0; j < 8; j++) {
+        var t = j / 8
+        var y0 = horizon + t * (h - horizon)
+        var y1 = y0 + (h - horizon) / 7
+        var inner0 = w / 2 + dir * w * (0.1 + t * 0.33)
+        var inner1 = w / 2 + dir * w * (0.1 + (t + 0.14) * 0.33)
+        ctx.fillStyle = j % 3 === 0 ? COL.canyonLight : (j % 2 ? COL.canyon : '#278f72')
+        ctx.beginPath()
+        ctx.moveTo(baseX, y0)
+        ctx.lineTo(inner0, y0)
+        ctx.lineTo(inner1, y1)
+        ctx.lineTo(baseX, y1)
+        ctx.closePath()
+        ctx.fill()
+        // 水晶棱线
+        ctx.strokeStyle = 'rgba(193,255,212,0.5)'
+        ctx.lineWidth = 1.5
+        ctx.beginPath()
+        ctx.moveTo(inner0, y0)
+        ctx.lineTo(inner1, y1)
+        ctx.stroke()
       }
     }
-    return out
-  }
 
-  Renderer.prototype.player = function (player) {
-    var level = this.level
-    var palette = {
-      body: C.color.player, light: C.color.playerLight,
-      dark: C.color.playerDark, skin: C.color.playerSkin
-    }
-    var scaleMul = 1 + player.pulse * 0.14
-    var units = this.crowd(player.x, level.traveled, player.count, palette, player.phase, scaleMul)
-    if (player.count > 0 && units.length) {
-      var top = units[0]
-      for (var i = 1; i < units.length; i++) if (units[i].y < top.y) top = units[i]
-      strokeText(this.ctx, String(Math.round(player.count)), player.x, Math.max(46, top.y - top.r * 3.2),
-        'bold ' + Math.round(this.w * 0.085) + 'px Arial', C.color.hudText)
-    }
-  }
-
-  // 红兵潮：高密度矩形方阵铺满通道 + 头顶剩余兵力
-  Renderer.prototype.wave = function (item) {
-    var ctx = this.ctx, w = this.w
-    var level = this.level
-    var b = level.enemyBounds(item)
-    var pr = item._proj || level.project(item.z - (item._adv || 0))
-    var s = pr.s
-    var palette = {
-      body: C.color.enemy, light: C.color.enemyLight,
-      dark: C.color.enemyDark, skin: C.color.enemySkin
-    }
-    var alive = Math.max(0, Math.round(item._hp))
-    var drawN = Math.min(alive, C.maxDrawnUnits)
-    var widthX = b.hw * 2
-    var gapX = w * C.enemyUnitRatio * 1.9
-    var gapZ = w * C.formationDepthGapRatio * 0.9
-    var offs = waveOffsets(drawN, widthX, gapX, gapZ)
-    var units = []
-    for (var i = 0; i < offs.length; i++) {
-      var p = level.project(item.z - (item._adv || 0) + offs[i].dz)
-      var r = w * C.enemyUnitRatio * p.s
-      units.push({ x: level.projX(b.cx + offs[i].dx, p.s), y: p.sy, r: r, phase: 2 + i * 0.4 })
-    }
-    units.sort(function (a, b2) { return a.y - b2.y })
-    for (var k = 0; k < units.length; k++) this.unit(units[k].x, units[k].y, units[k].r, palette, units[k].phase)
-
-    if (units.length) {
-      var topY = units[0].y
-      for (var u = 1; u < units.length; u++) if (units[u].y < topY) topY = units[u].y
-      var fs = Math.max(13, Math.round(w * 0.08 * s))
-      strokeText(ctx, String(alive), level.projX(b.cx, s), Math.max(38, topY - w * 0.05 * s),
-        'bold ' + fs + 'px Arial', '#ffe3e3')
-    }
-  }
-
-  // 兵牌：立体小石碑，蓝 +1 / 黄高值，立在左右路边
-  Renderer.prototype.pickup = function (item) {
-    var ctx = this.ctx, w = this.w
-    var level = this.level
-    var pr = item._proj || level.project(item.z - (item._adv || 0))
-    var s = pr.s
-    var cx = level.projX(level.pickupAnchorX(item), s)
-    var sy = pr.sy
-    var pw = w * 0.078 * s
-    var ph = w * 0.125 * s
-    var x = cx - pw / 2
-    var top = sy - ph
-    var isGold = item.side === 'R'
-    var main = isGold ? C.color.plaqueGold : C.color.plaqueBlue
-    var dark = isGold ? C.color.plaqueGoldDark : C.color.plaqueBlueDark
-
-    // 底座阴影（厚度）
-    ctx.fillStyle = 'rgba(0,0,0,0.25)'
-    roundRect(ctx, x + 3 * s, top + 4 * s, pw, ph, 5 * s)
-    ctx.fill()
-    // 牌身
-    ctx.fillStyle = dark
-    roundRect(ctx, x - 2 * s, top, pw, ph, 5 * s)
-    ctx.fill()
-    ctx.fillStyle = main
-    roundRect(ctx, x, top + 2 * s, pw - 3 * s, ph - 4 * s, 5 * s)
-    ctx.fill()
-    // 顶部受光
-    ctx.fillStyle = 'rgba(255,255,255,0.3)'
-    roundRect(ctx, x + 3 * s, top + 3 * s, pw - 9 * s, ph * 0.26, 4 * s)
-    ctx.fill()
-    // 文案
-    ctx.fillStyle = isGold ? C.color.plaqueTextDark : '#ffffff'
-    ctx.font = 'bold ' + Math.max(8, Math.round(w * 0.045 * s)) + 'px Arial'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(item.label, cx - 1 * s, top + ph * 0.58)
-  }
-
-  // 红袍三国武将：宽袍 + 紫毛领 + 黑胡子 + 头盔 + 武器，头顶红血条数字
-  Renderer.prototype.general = function (item) {
-    var ctx = this.ctx, w = this.w
-    var level = this.level
-    var b = level.enemyBounds(item)
-    var pr = item._proj || level.project(item.z - (item._adv || 0))
-    var s = pr.s
-    var cx = level.projX(b.cx, s)
-    var sy = pr.sy
-    var breathe = item._engaged ? 1 + Math.sin(performance.now() / 120) * 0.02 : 1
-    var rw = w * 0.26 * s * breathe
-    var rh = w * 0.36 * s
-    var bx = cx - rw / 2
-    var by = sy - rh
-
-    // 影子
-    fillEllipse(ctx, cx, sy + rw * 0.06, rw * 0.62, rw * 0.2, 'rgba(0,0,0,0.3)')
-
-    // 武器（右手长柄大刀，深色杆 + 银刃）
-    ctx.strokeStyle = '#3a2c20'
-    ctx.lineWidth = Math.max(2, 5 * s)
+    // 中央沙道（透视梯形）
+    ctx.fillStyle = COL.sand
     ctx.beginPath()
-    ctx.moveTo(bx + rw * 0.92, by + rh * 0.25)
-    ctx.lineTo(bx + rw * 1.18, by + rh * 0.95)
+    ctx.moveTo(w * 0.43, horizon)
+    ctx.lineTo(w * 0.57, horizon)
+    ctx.lineTo(w * 0.98, h)
+    ctx.lineTo(w * 0.02, h)
+    ctx.closePath()
+    ctx.fill()
+
+    // 沙道横向移动纹理，强化前进速度感
+    ctx.strokeStyle = 'rgba(181,140,84,0.35)'
+    ctx.lineWidth = 2
+    var off = (traveled || 0) % 160
+    for (var k = 0; k < 14; k++) {
+      var z = k * 160 + off
+      var t = Math.pow((z % 2240) / 2240, 0.72)
+      var y = horizon + t * (h - horizon)
+      var half = w * (0.07 + t * 0.41)
+      ctx.beginPath()
+      ctx.moveTo(w / 2 - half, y)
+      ctx.lineTo(w / 2 + half, y)
+      ctx.stroke()
+    }
+
+    // 沙粒
+    ctx.fillStyle = 'rgba(181,140,84,0.35)'
+    for (var m = 0; m < 24; m++) {
+      var sx = ((m * 73 + (traveled || 0) * 0.2) % 100) / 100 * w
+      var sy = horizon + (((m * 41 + (traveled || 0) * 0.5) % 100) / 100) * (h - horizon)
+      ctx.fillRect(sx, sy, 2, 2)
+    }
+
+    // 路缘
+    ctx.strokeStyle = COL.roadEdge
+    ctx.lineWidth = Math.max(2, w * 0.008)
+    ctx.beginPath()
+    ctx.moveTo(w * 0.43, horizon)
+    ctx.lineTo(w * 0.02, h)
+    ctx.moveTo(w * 0.57, horizon)
+    ctx.lineTo(w * 0.98, h)
     ctx.stroke()
-    ctx.fillStyle = '#d7dde3'
+  }
+
+  // ---------- 小人 ----------
+  Renderer.prototype.soldier = function (x, y, r, faction, phase, unitType) {
+    var ctx = this.ctx
+    var blue = faction === 'player'
+    var unit = CR.Content.unitTypes[unitType || (blue ? 'shield' : 'shield')]
+    var main = blue ? (unit ? unit.color : COL.player) : COL.enemy
+    var light = blue ? COL.playerLight : COL.enemyLight
+    var dark = blue ? COL.playerDark : COL.enemyDark
+    var bob = Math.sin(phase || 0) * r * 0.15
+    y += bob
+
+    // 椭圆投影
+    ctx.fillStyle = 'rgba(40,35,20,0.25)'
     ctx.beginPath()
-    ctx.moveTo(bx + rw * 0.86, by + rh * 0.16)
-    ctx.lineTo(bx + rw * 1.06, by + rh * 0.3)
-    ctx.lineTo(bx + rw * 0.9, by + rh * 0.36)
+    ctx.ellipse(x, y + r * 1.55, r * 0.95, r * 0.35, 0, 0, Math.PI * 2)
+    ctx.fill()
+
+    // 双腿
+    ctx.strokeStyle = dark
+    ctx.lineWidth = Math.max(1, r * 0.32)
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.moveTo(x - r * 0.25, y + r * 0.65)
+    ctx.lineTo(x - r * 0.38, y + r * 1.4)
+    ctx.moveTo(x + r * 0.25, y + r * 0.65)
+    ctx.lineTo(x + r * 0.38, y + r * 1.4)
+    ctx.stroke()
+
+    // 身体
+    ctx.fillStyle = main
+    ctx.beginPath()
+    ctx.ellipse(x, y + r * 0.3, r * 0.62, r * 0.78, 0, 0, Math.PI * 2)
+    ctx.fill()
+    // 高光
+    ctx.fillStyle = light
+    ctx.beginPath()
+    ctx.ellipse(x - r * 0.2, y + r * 0.05, r * 0.22, r * 0.4, -0.3, 0, Math.PI * 2)
+    ctx.fill()
+
+    // 兵种兵器：刀盾、弓、骑兵长枪
+    if (unitType === 'archer') {
+      ctx.strokeStyle = '#7b4a20'
+      ctx.lineWidth = Math.max(1, r * 0.16)
+      ctx.beginPath()
+      ctx.arc(x + r * 0.65, y + r * 0.25, r * 0.55, -1.2, 1.2)
+      ctx.stroke()
+    } else if (unitType === 'cavalry') {
+      ctx.strokeStyle = '#5a4028'
+      ctx.lineWidth = Math.max(1, r * 0.18)
+      ctx.beginPath()
+      ctx.moveTo(x + r * 0.55, y + r * 1.1)
+      ctx.lineTo(x + r * 0.9, y - r * 1.2)
+      ctx.stroke()
+    } else {
+      ctx.fillStyle = blue ? '#d7edf7' : '#9d2935'
+      ctx.beginPath()
+      ctx.arc(x - r * 0.58, y + r * 0.28, r * 0.38, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    // 头盔
+    ctx.fillStyle = dark
+    ctx.beginPath()
+    ctx.arc(x, y - r * 0.55, r * 0.5, Math.PI, Math.PI * 2)
+    ctx.fill()
+    // 头
+    ctx.fillStyle = '#ffd9ae'
+    ctx.beginPath()
+    ctx.arc(x, y - r * 0.42, r * 0.42, 0, Math.PI * 2)
+    ctx.fill()
+    // 盔檐
+    ctx.fillStyle = dark
+    ctx.fillRect(x - r * 0.48, y - r * 0.62, r * 0.96, r * 0.16)
+  }
+
+  // ---------- 红袍武将 ----------
+  Renderer.prototype.general = function (x, y, r, boss, phase, stage) {
+    var ctx = this.ctx
+    var bob = Math.sin(phase || 0) * r * 0.06
+    y += bob
+
+    // 大投影
+    ctx.fillStyle = 'rgba(40,20,15,0.3)'
+    ctx.beginPath()
+    ctx.ellipse(x, y + r * 1.15, r * 0.95, r * 0.25, 0, 0, Math.PI * 2)
+    ctx.fill()
+
+    // 红袍下摆
+    ctx.fillStyle = stage >= 3 ? '#6f0d22' : (boss ? '#a3132c' : '#c42635')
+    ctx.beginPath()
+    ctx.moveTo(x - r * 0.52, y - r * 0.2)
+    ctx.lineTo(x + r * 0.52, y - r * 0.2)
+    ctx.lineTo(x + r * 0.85, y + r * 1.1)
+    ctx.lineTo(x - r * 0.85, y + r * 1.1)
+    ctx.closePath()
+    ctx.fill()
+    // 袍子高光
+    ctx.fillStyle = '#e2484c'
+    ctx.beginPath()
+    ctx.moveTo(x - r * 0.25, y - r * 0.1)
+    ctx.lineTo(x + r * 0.05, y - r * 0.1)
+    ctx.lineTo(x - r * 0.05, y + r)
+    ctx.lineTo(x - r * 0.42, y + r)
     ctx.closePath()
     ctx.fill()
 
-    // 战袍（暗红大袍，下摆正梯形）
-    ctx.fillStyle = C.color.generalRobeDark
+    // 金腰带
+    ctx.fillStyle = COL.gold
+    ctx.fillRect(x - r * 0.55, y + r * 0.42, r * 1.1, r * 0.16)
+    ctx.fillStyle = COL.goldDark
     ctx.beginPath()
-    ctx.moveTo(bx, by + rh)
-    ctx.lineTo(bx + rw * 0.12, by + rh * 0.3)
-    ctx.lineTo(bx + rw * 0.88, by + rh * 0.3)
-    ctx.lineTo(bx + rw, by + rh)
-    ctx.closePath()
-    ctx.fill()
-    ctx.fillStyle = C.color.generalRobe
-    ctx.beginPath()
-    ctx.moveTo(bx + rw * 0.1, by + rh * 0.96)
-    ctx.lineTo(bx + rw * 0.2, by + rh * 0.34)
-    ctx.lineTo(bx + rw * 0.8, by + rh * 0.34)
-    ctx.lineTo(bx + rw * 0.9, by + rh * 0.96)
-    ctx.closePath()
-    ctx.fill()
-    // 金色腰带
-    ctx.fillStyle = C.color.gold
-    ctx.fillRect(bx + rw * 0.16, by + rh * 0.62, rw * 0.68, rw * 0.07)
-    // 紫色毛领（双肩一圈）
-    ctx.fillStyle = C.color.generalFur
-    ctx.beginPath()
-    ctx.arc(cx, by + rh * 0.3, rw * 0.3, Math.PI * 0.05, Math.PI * 0.95)
-    ctx.lineTo(cx + rw * 0.26, by + rh * 0.42)
-    ctx.arc(cx, by + rh * 0.3, rw * 0.18, Math.PI * 0.95, Math.PI * 0.05, true)
-    ctx.closePath()
-    ctx.fill()
-    // 脸
-    ctx.fillStyle = C.color.generalSkin
-    ctx.beginPath()
-    ctx.arc(cx, by + rh * 0.26, rw * 0.2, 0, Math.PI * 2)
-    ctx.fill()
-    // 头盔（红盔 + 黑缨）
-    ctx.fillStyle = '#7d1b22'
-    ctx.beginPath()
-    ctx.arc(cx, by + rh * 0.2, rw * 0.22, Math.PI, 0)
-    ctx.fill()
-    ctx.fillStyle = '#241b1b'
-    ctx.beginPath()
-    ctx.arc(cx, by + rh * 0.02, rw * 0.05, 0, Math.PI * 2)
-    ctx.fill()
-    // 粗黑眉须 + 络腮胡
-    ctx.fillStyle = C.color.generalBeard
-    ctx.fillRect(cx - rw * 0.16, by + rh * 0.2, rw * 0.1, rw * 0.03)
-    ctx.fillRect(cx + rw * 0.06, by + rh * 0.2, rw * 0.1, rw * 0.03)
-    ctx.beginPath()
-    ctx.arc(cx, by + rh * 0.34, rw * 0.13, 0, Math.PI)
+    ctx.arc(x, y + r * 0.5, r * 0.14, 0, Math.PI * 2)
     ctx.fill()
 
-    // 头顶黑底红血条 + 数字
-    var hp = item._hp
-    var maxHp = item._maxHp || 1
-    var bw = rw * 1.2
-    var bh = Math.max(6, rw * 0.1)
-    var bxx = cx - bw / 2
-    var byy = by - bh * 2.6
-    ctx.fillStyle = 'rgba(0,0,0,0.6)'
-    roundRect(ctx, bxx - 3, byy - 3, bw + 6, bh + 6, bh)
+    // 上身铠甲
+    ctx.fillStyle = '#5c2430'
+    ctx.beginPath()
+    ctx.ellipse(x, y - r * 0.12, r * 0.55, r * 0.5, 0, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = '#3a2024'
-    roundRect(ctx, bxx, byy, bw, bh, bh / 2)
+    // 紫色毛领
+    ctx.fillStyle = '#6d3c8e'
+    for (var i = 0; i < 7; i++) {
+      var a = Math.PI + i * Math.PI / 6
+      ctx.beginPath()
+      ctx.arc(x + Math.cos(a) * r * 0.45, y - r * 0.42 + Math.sin(a) * r * 0.12, r * 0.18, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    // 脸 + 黑胡子
+    ctx.fillStyle = '#e8b083'
+    ctx.beginPath()
+    ctx.arc(x, y - r * 0.72, r * 0.3, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = C.color.generalHp
-    roundRect(ctx, bxx, byy, bw * Math.max(0, hp / maxHp), bh, bh / 2)
+    ctx.fillStyle = '#241a1c'
+    ctx.beginPath()
+    ctx.moveTo(x - r * 0.24, y - r * 0.62)
+    ctx.lineTo(x + r * 0.24, y - r * 0.62)
+    ctx.lineTo(x + r * 0.12, y - r * 0.25)
+    ctx.lineTo(x, y - r * 0.32)
+    ctx.lineTo(x - r * 0.12, y - r * 0.25)
+    ctx.closePath()
     ctx.fill()
-    strokeText(ctx, String(Math.max(0, Math.round(hp))), cx, byy - bh * 1.7,
-      'bold ' + Math.max(10, Math.round(w * 0.05 * s)) + 'px Arial', '#ffffff')
-    if (item.boss) {
-      strokeText(ctx, '最终BOSS', cx, byy - bh * 3.5,
-        'bold ' + Math.max(10, Math.round(w * 0.045 * s)) + 'px Arial', C.color.gold)
+
+    // 头盔 + 黑缨
+    ctx.fillStyle = '#3c3438'
+    ctx.beginPath()
+    ctx.arc(x, y - r * 0.86, r * 0.32, Math.PI, Math.PI * 2)
+    ctx.fill()
+    ctx.strokeStyle = '#191418'
+    ctx.lineWidth = r * 0.1
+    ctx.beginPath()
+    ctx.moveTo(x, y - r * 1.12)
+    ctx.quadraticCurveTo(x + r * 0.2, y - r * 1.45, x + r * 0.38, y - r * 1.3)
+    ctx.stroke()
+
+    // 长柄刀
+    ctx.strokeStyle = '#4a3526'
+    ctx.lineWidth = r * 0.07
+    ctx.beginPath()
+    ctx.moveTo(x + r * 0.72, y + r * 0.9)
+    ctx.lineTo(x + r * 0.72, y - r * 1.35)
+    ctx.stroke()
+    ctx.fillStyle = '#d8dee2'
+    ctx.beginPath()
+    ctx.moveTo(x + r * 0.72, y - r * 1.35)
+    ctx.quadraticCurveTo(x + r * 1.2, y - r * 1.4, x + r * 1.05, y - r * 1.05)
+    ctx.quadraticCurveTo(x + r * 0.85, y - r * 1.12, x + r * 0.72, y - r * 1.05)
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  // ---------- 兵牌 ----------
+  Renderer.prototype.pickup = function (x, y, s, value, side) {
+    var ctx = this.ctx
+    var gold = side === 'R'
+    var w = this.w * 0.12 * s
+    var h = w * 1.15
+    var r = w * 0.18
+
+    // 底座阴影
+    ctx.fillStyle = 'rgba(40,30,15,0.25)'
+    ctx.beginPath()
+    ctx.ellipse(x, y + h * 0.45, w * 0.65, h * 0.16, 0, 0, Math.PI * 2)
+    ctx.fill()
+
+    // 牌体
+    var grad = ctx.createLinearGradient(x, y - h / 2, x, y + h / 2)
+    if (gold) {
+      grad.addColorStop(0, '#ffd968')
+      grad.addColorStop(1, '#f29b12')
+    } else {
+      grad.addColorStop(0, '#62c1ff')
+      grad.addColorStop(1, '#1673d1')
+    }
+    ctx.fillStyle = grad
+    ctx.strokeStyle = gold ? COL.goldDark : '#0c4e96'
+    ctx.lineWidth = Math.max(1, w * 0.05)
+    ctx.beginPath()
+    ctx.moveTo(x - w / 2 + r, y - h / 2)
+    ctx.arcTo(x + w / 2, y - h / 2, x + w / 2, y + h / 2, r)
+    ctx.arcTo(x + w / 2, y + h / 2, x - w / 2, y + h / 2, r)
+    ctx.arcTo(x - w / 2, y + h / 2, x - w / 2, y - h / 2, r)
+    ctx.arcTo(x - w / 2, y - h / 2, x + w / 2, y - h / 2, r)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+
+    // 牌面小兵 + 数值
+    this.soldier(x, y - h * 0.12, w * 0.16, 'player', 0)
+    this.text('+' + value, x, y + h * 0.27, Math.max(9, w * 0.3), '#ffffff')
+  }
+
+  // ---------- 敌潮 ----------
+  Renderer.prototype.wave = function (level, o) {
+    var dz = o.z - level.traveled
+    if (dz < -C.contactRange || dz > C.viewFar) return
+    var s = level.projScale(dz)
+    var y = level.projY(dz)
+    var count = Math.max(0, o._liveCount == null ? o.size : o._liveCount)
+    if (count <= 0) return
+    var cols = 9
+    var rows = Math.ceil(count / cols)
+    var r = this.w * C.enemyUnitRatio * s
+    var gap = r * 2.5
+    var drawn = 0
+    // 后排先画，前排后画形成遮挡
+    for (var row = rows - 1; row >= 0; row--) {
+      for (var col = 0; col < cols; col++) {
+        var idx = row * cols + col
+        if (idx >= count) continue
+        if (drawn++ >= 90) break
+        var x = this.w / 2 + (col - (cols - 1) / 2) * gap
+        var yy = y - row * gap * 0.75
+        this.soldier(x, yy, r, 'enemy', level.elapsed * 9 + idx, o.unitType)
+      }
+    }
+    // 血条
+    if (o._engaged) {
+      var bw = this.w * 0.36 * s
+      this.healthBar(this.w / 2, y - rows * gap * 0.75 - r * 2.2, bw, Math.max(4, 8 * s), o.hp / o.maxHp, COL.enemy)
+      this.text(CR.Content.unitTypes[o.unitType].name + ' ' + count, this.w / 2, y - rows * gap * 0.75 - r * 3.2, Math.max(10, 18 * s), '#ffd8d8')
     }
   }
 
-  Renderer.prototype.castle = function (item) {
-    var ctx = this.ctx, w = this.w
-    var level = this.level
-    var pr = item._proj || level.project(item.z - (item._adv || 0))
-    var s = pr.s
-    var sy = pr.sy
-    var cw = w * 0.9 * s
-    var cx = w / 2
-    var ch = w * 0.42 * s
-    var left = cx - cw / 2
-    var top = sy - ch
-    ctx.fillStyle = C.color.castleDark
-    roundRect(ctx, left, top, cw, ch, 8 * s)
-    ctx.fill()
-    ctx.fillStyle = C.color.castle
-    roundRect(ctx, left + 6 * s, top + 8 * s, cw - 12 * s, ch - 8 * s, 6 * s)
-    ctx.fill()
-    ctx.fillStyle = C.color.castleDark
-    var merlonW = cw / 7
-    for (var i = 0; i < 7; i += 2) ctx.fillRect(left + i * merlonW, top - 10 * s, merlonW * 0.9, 14 * s)
-    ctx.fillRect(left - 8 * s, top + ch * 0.18, 18 * s, ch * 0.82)
-    ctx.fillRect(left + cw - 10 * s, top + ch * 0.18, 18 * s, ch * 0.82)
-    ctx.fillStyle = 'rgba(255,255,255,0.16)'
-    ctx.fillRect(left + cw * 0.82, top + 8 * s, cw * 0.12, ch - 8 * s)
-    ctx.fillStyle = '#4a4034'
-    roundRect(ctx, cx - cw * 0.11, sy - ch * 0.4, cw * 0.22, ch * 0.4, cw * 0.11)
-    ctx.fill()
+  Renderer.prototype.healthBar = function (x, y, w, h, ratio, color) {
+    var ctx = this.ctx
+    ratio = Math.max(0, Math.min(1, ratio))
+    ctx.fillStyle = 'rgba(30,20,20,0.65)'
+    ctx.fillRect(x - w / 2 - 1, y - 1, w + 2, h + 2)
+    ctx.fillStyle = '#4b1515'
+    ctx.fillRect(x - w / 2, y, w, h)
+    ctx.fillStyle = color
+    ctx.fillRect(x - w / 2, y, w * ratio, h)
   }
 
-  Renderer.prototype.fx = function (fx) {
+  // ---------- 玩家兵团 ----------
+  Renderer.prototype.army = function (level, player) {
+    var f = player.formation
+    var r = player.radius
+    var count = Math.min(player.count, C.maxDrawnUnits)
+    var drawn = 0
+    for (var row = f.rows - 1; row >= 0; row--) {
+      for (var col = 0; col < f.perRow; col++) {
+        var idx = row * f.perRow + col
+        if (idx >= count) continue
+        var x = player.x + (col - (f.perRow - 1) / 2) * f.spacing
+        var y = f.top + row * f.spacing
+        this.soldier(x, y, r, 'player', level.elapsed * 10 + idx * 0.7, player.unitType)
+        drawn++
+      }
+    }
+    // 收编脉冲
+    if (player.pulse > 0) {
+      var ctx = this.ctx
+      ctx.strokeStyle = 'rgba(93,196,255,' + player.pulse + ')'
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.arc(player.x, level.groundY - r, (1.6 - player.pulse) * r * 3, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+  }
+
+  // ---------- 特效 ----------
+  Renderer.prototype.effects = function (fx) {
     var ctx = this.ctx
-    // 收编光环
-    for (var ri = 0; ri < fx.rings.length; ri++) {
-      var rg = fx.rings[ri]
-      ctx.globalAlpha = Math.max(0, rg.life / rg.maxLife) * 0.8
-      ctx.strokeStyle = rg.color
+    var i
+    for (i = 0; i < fx.rings.length; i++) {
+      var r = fx.rings[i]
+      var t = r.age / r.life
+      ctx.strokeStyle = r.color
+      ctx.globalAlpha = 1 - t
       ctx.lineWidth = 3
       ctx.beginPath()
-      ctx.arc(rg.x, rg.y, rg.r, 0, Math.PI * 2)
+      ctx.arc(r.x, r.y, 12 + t * 55, 0, Math.PI * 2)
       ctx.stroke()
     }
     ctx.globalAlpha = 1
 
-    // 碎骨（白色小块）+ 灰烟
-    for (var bi = 0; bi < fx.bones.length; bi++) {
-      var bn = fx.bones[bi]
-      var alpha = Math.max(0, bn.life / bn.maxLife)
-      for (var sm = 0; sm < bn.smokes.length; sm++) {
-        var smk = bn.smokes[sm]
-        ctx.globalAlpha = alpha * 0.62
-        ctx.fillStyle = C.color.smoke
-        ctx.beginPath()
-        ctx.arc(bn.x + smk.dx, bn.y + smk.dy, smk.r, 0, Math.PI * 2)
-        ctx.fill()
-      }
-      ctx.globalAlpha = alpha
-      ctx.fillStyle = C.color.bone
-      ctx.strokeStyle = 'rgba(90,80,66,0.45)'
-      ctx.lineWidth = 1
-      for (var j = 0; j < bn.bones.length; j++) {
-        var q = bn.bones[j]
-        ctx.save()
-        ctx.translate(bn.x + q.dx, bn.y + q.dy)
-        ctx.rotate(q.rot)
-        ctx.beginPath()
-        ctx.rect(-q.size / 2, -q.size / 2, q.size, q.size * 0.62)
-        ctx.fill()
-        ctx.stroke()
-        ctx.restore()
-      }
-      ctx.globalAlpha = 1
-    }
-
-    // 子弹弹道：金色发光弹丸 + 长拖尾，清晰可辨的飞行射线
-    for (var bu = 0; bu < fx.bullets.length; bu++) {
-      var bl2 = fx.bullets[bu]
-      var f = Math.min(1, bl2.t / bl2.dur)
-      var bx = bl2.x0 + (bl2.x1 - bl2.x0) * f
-      var by = bl2.y0 + (bl2.y1 - bl2.y0) * f
-      var tf = Math.max(0, f - 0.55)
-      var tx = bl2.x0 + (bl2.x1 - bl2.x0) * tf
-      var ty = bl2.y0 + (bl2.y1 - bl2.y0) * tf
-      // 外层金色光晕拖尾
-      ctx.strokeStyle = 'rgba(255,196,60,0.55)'
-      ctx.lineWidth = 6
-      ctx.lineCap = 'round'
-      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(bx, by); ctx.stroke()
-      // 内层亮金芯
-      ctx.strokeStyle = 'rgba(255,236,150,0.95)'
-      ctx.lineWidth = 2.6
-      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(bx, by); ctx.stroke()
-      // 弹丸：金色外晕 + 白亮芯
-      ctx.fillStyle = 'rgba(255,210,80,0.9)'
-      ctx.beginPath(); ctx.arc(bx, by, 5, 0, Math.PI * 2); ctx.fill()
-      ctx.fillStyle = '#fff6d8'
-      ctx.beginPath(); ctx.arc(bx, by, 2.6, 0, Math.PI * 2); ctx.fill()
-    }
-
-    // 通用爆点
-    for (var k = 0; k < fx.bursts.length; k++) {
-      var b = fx.bursts[k]
-      ctx.globalAlpha = Math.max(0, b.life / b.maxLife)
-      ctx.fillStyle = b.color
-      for (var jj = 0; jj < b.parts.length; jj++) {
-        var p = b.parts[jj]
-        ctx.beginPath()
-        ctx.arc(b.x + p.dx, b.y + p.dy, p.r, 0, Math.PI * 2)
-        ctx.fill()
-      }
-      ctx.globalAlpha = 1
-    }
-
-    // 飘字
-    for (var i = 0; i < fx.floaters.length; i++) {
-      var f = fx.floaters[i]
-      ctx.globalAlpha = Math.max(0, f.life / f.maxLife)
-      strokeText(ctx, f.text, f.x, f.y,
-        'bold ' + Math.round(this.w * (f.big ? 0.085 : 0.06)) + 'px Arial', f.color)
-      ctx.globalAlpha = 1
-    }
-  }
-
-  Renderer.prototype.hud = function (levelIndex, player) {
-    var ctx = this.ctx
-    ctx.fillStyle = 'rgba(0,0,0,0.28)'
-    roundRect(ctx, 12, 14, 96, 34, 17)
-    ctx.fill()
-    ctx.fillStyle = '#fff'
-    ctx.font = 'bold ' + Math.round(this.w * 0.04) + 'px Arial'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText('第 ' + (levelIndex + 1) + ' 关', 60, 31)
-    if (player) {
-      ctx.fillStyle = 'rgba(0,0,0,0.28)'
-      roundRect(ctx, 12, 54, 214, 30, 15)
+    // 金色发光弹道，带拖尾
+    for (i = 0; i < fx.bullets.length; i++) {
+      var b = fx.bullets[i]
+      ctx.save()
+      ctx.strokeStyle = 'rgba(255,210,87,0.55)'
+      ctx.lineWidth = 5
+      ctx.shadowColor = COL.gold
+      ctx.shadowBlur = 12
+      ctx.beginPath()
+      ctx.moveTo(b.x - (b.tx - b.sx) * 0.06, b.y - (b.ty - b.sy) * 0.06)
+      ctx.lineTo(b.x, b.y)
+      ctx.stroke()
+      ctx.fillStyle = '#fff3b0'
+      ctx.beginPath()
+      ctx.arc(b.x, b.y, 4, 0, Math.PI * 2)
       ctx.fill()
-      ctx.fillStyle = '#fff4c8'
-      ctx.font = 'bold ' + Math.round(this.w * 0.032) + 'px Arial'
-      ctx.textAlign = 'left'
-      ctx.fillText('攻击Lv.' + (player.attackLevel || 0) + '  体质Lv.' + (player.vitalityLevel || 0) + '（每兵' + (player.hpPerUnit || 1) + '血）', 23, 69)
+      ctx.restore()
     }
+
+    // 碎骨与灰烟
+    for (i = 0; i < fx.bursts.length; i++) {
+      var p = fx.bursts[i]
+      var a = 1 - p.age / p.life
+      ctx.save()
+      ctx.globalAlpha = a
+      ctx.translate(p.x, p.y)
+      ctx.rotate(p.rot)
+      if (p.smoke) {
+        ctx.fillStyle = COL.smoke
+        ctx.beginPath()
+        ctx.arc(0, 0, p.size * (1 + p.age * 3), 0, Math.PI * 2)
+        ctx.fill()
+      } else {
+        ctx.fillStyle = p.color
+        ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2)
+      }
+      ctx.restore()
+    }
+
+    for (i = 0; i < fx.floats.length; i++) {
+      var f = fx.floats[i]
+      ctx.globalAlpha = Math.max(0, 1 - f.age / f.life)
+      this.text(f.text, f.x, f.y, this.w * (f.big ? 0.055 : 0.04), f.color)
+    }
+    ctx.globalAlpha = 1
   }
 
-  Renderer.prototype.panel = function () {
-    this.ctx.fillStyle = C.color.panel
-    this.ctx.fillRect(0, 0, this.w, this.h)
-  }
-
-  Renderer.prototype.button = function (rect, text) {
+  Renderer.prototype.armyGate = function (level, o) {
+    var dz = o.z - level.traveled
+    if (dz < -C.pickupCollectDz || dz > C.viewFar) return
+    var s = level.projScale(dz)
+    var y = level.projY(dz)
     var ctx = this.ctx
-    ctx.fillStyle = C.color.buttonDark
-    roundRect(ctx, rect.x, rect.y + 4, rect.w, rect.h, 14)
-    ctx.fill()
-    ctx.fillStyle = C.color.button
-    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 14)
-    ctx.fill()
-    ctx.fillStyle = '#fff'
-    ctx.font = 'bold ' + Math.round(this.w * 0.052) + 'px Arial'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillText(text, rect.x + rect.w / 2, rect.y + rect.h / 2)
+    for (var i = 0; i < 2; i++) {
+      var option = i === 0 ? o.left : o.right
+      var x = level.projX(i === 0 ? 0.25 : 0.75, s)
+      var w = this.w * 0.3 * s
+      var h = this.h * 0.16 * s
+      ctx.fillStyle = i === 0 ? 'rgba(34,151,229,0.72)' : 'rgba(232,169,44,0.75)'
+      ctx.fillRect(x - w / 2, y - h, w, h)
+      ctx.strokeStyle = '#fff4c2'
+      ctx.lineWidth = Math.max(1, 3 * s)
+      ctx.strokeRect(x - w / 2, y - h, w, h)
+      this.text(option.label, x, y - h * 0.52, Math.max(10, this.w * 0.05 * s), '#ffffff')
+    }
+    this.text('倍率门 · 贴边选择', this.w / 2, y - this.h * 0.19 * s, Math.max(9, this.w * 0.032 * s), '#fff6ce')
   }
 
-  Renderer.prototype.upgradeButton = function (rect, title, detail, color, dark) {
+  Renderer.prototype.unitGate = function (level, o) {
+    var dz = o.z - level.traveled
+    if (dz < -C.pickupCollectDz || dz > C.viewFar) return
+    var s = level.projScale(dz)
+    var y = level.projY(dz)
+    for (var i = 0; i < 2; i++) {
+      var id = i === 0 ? o.left : o.right
+      var unit = CR.Content.unitTypes[id]
+      var x = level.projX(i === 0 ? 0.25 : 0.75, s)
+      this.soldier(x, y - 22 * s, this.w * 0.035 * s, 'player', 0, id)
+      this.text(unit.name, x, y + 22 * s, Math.max(9, this.w * 0.04 * s), unit.color)
+    }
+    this.text('兵种门', this.w / 2, y - this.h * 0.1 * s, Math.max(9, this.w * 0.035 * s), '#ffffff')
+  }
+
+  Renderer.prototype.eventObject = function (level, o) {
+    var dz = o.z - level.traveled
+    if (dz < -C.pickupCollectDz || dz > C.viewFar) return
+    var s = level.projScale(dz)
+    var x = level.projX(0.88, s)
+    var y = level.projY(dz)
     var ctx = this.ctx
-    ctx.fillStyle = dark
-    roundRect(ctx, rect.x, rect.y + 4, rect.w, rect.h, 14)
+    ctx.fillStyle = o.event.id === 'ambush' ? '#a83a36' : '#d99a25'
+    ctx.beginPath()
+    ctx.arc(x, y - 18 * s, 28 * s, 0, Math.PI * 2)
     ctx.fill()
-    ctx.fillStyle = color
-    roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 14)
-    ctx.fill()
-    ctx.fillStyle = '#fff'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.font = 'bold ' + Math.round(this.w * 0.047) + 'px Arial'
-    ctx.fillText(title, rect.x + rect.w / 2, rect.y + rect.h * 0.34)
-    ctx.font = Math.round(this.w * 0.033) + 'px Arial'
-    ctx.fillText(detail, rect.x + rect.w / 2, rect.y + rect.h * 0.7)
+    this.text(o.event.name, x, y - 18 * s, Math.max(9, this.w * 0.038 * s), '#ffffff')
+    this.text(o.event.desc, x, y + 16 * s, Math.max(8, this.w * 0.026 * s), '#fff2b0')
   }
 
-  Renderer.prototype.title = function (text, y, size, color) {
-    strokeText(this.ctx, text, this.w / 2, y,
-      'bold ' + Math.round(this.w * size) + 'px Arial', color || '#fff')
-  }
-
-  Renderer.prototype.line = function (text, y, size, color) {
+  Renderer.prototype.escort = function (level, player) {
+    if (level.data.mode !== 'escort') return
     var ctx = this.ctx
-    ctx.font = Math.round(this.w * size) + 'px Arial'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillStyle = color || '#eee'
-    ctx.fillText(text, this.w / 2, y)
+    var x = player.x + this.w * 0.18
+    var y = level.groundY + this.w * 0.06
+    var r = this.w * 0.055
+    ctx.fillStyle = 'rgba(40,30,20,0.25)'
+    ctx.beginPath()
+    ctx.ellipse(x, y + r * 0.45, r, r * 0.3, 0, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#9b632c'
+    ctx.fillRect(x - r * 0.75, y - r * 0.55, r * 1.5, r * 0.8)
+    ctx.fillStyle = '#e6bc63'
+    ctx.beginPath()
+    ctx.moveTo(x - r * 0.85, y - r * 0.55)
+    ctx.lineTo(x, y - r * 1.2)
+    ctx.lineTo(x + r * 0.85, y - r * 0.55)
+    ctx.closePath()
+    ctx.fill()
+    ctx.fillStyle = '#3c2c22'
+    ctx.beginPath()
+    ctx.arc(x - r * 0.55, y + r * 0.35, r * 0.25, 0, Math.PI * 2)
+    ctx.arc(x + r * 0.55, y + r * 0.35, r * 0.25, 0, Math.PI * 2)
+    ctx.fill()
+    var hp = level.data.escortHp == null ? C.escortHp : level.data.escortHp
+    this.healthBar(x, y - r * 1.6, r * 2, 6, hp / C.escortHp, '#e9b94d')
   }
 
-  // 主渲染：远→近绘制世界，玩家最后覆盖
+  Renderer.prototype.castle = function (level, o) {
+    var dz = o.z - level.traveled
+    if (dz < -100 || dz > C.viewFar) return
+    var ctx = this.ctx
+    var s = level.projScale(dz)
+    var x = this.w / 2
+    var y = level.projY(dz)
+    var w = this.w * 0.5 * s
+    var h = w * 0.65
+    ctx.fillStyle = '#b9c2bd'
+    ctx.fillRect(x - w / 2, y - h, w, h)
+    ctx.fillStyle = '#87958c'
+    for (var i = 0; i < 5; i++) ctx.fillRect(x - w / 2 + i * w / 5, y - h - w * 0.12, w * 0.1, w * 0.12)
+    ctx.fillStyle = '#5d4632'
+    ctx.beginPath()
+    ctx.arc(x, y - h * 0.35, w * 0.14, Math.PI, 0)
+    ctx.lineTo(x + w * 0.14, y)
+    ctx.lineTo(x - w * 0.14, y)
+    ctx.closePath()
+    ctx.fill()
+    ctx.fillStyle = '#d3483f'
+    ctx.beginPath()
+    ctx.moveTo(x, y - h - w * 0.35)
+    ctx.lineTo(x + w * 0.25, y - h - w * 0.28)
+    ctx.lineTo(x, y - h - w * 0.2)
+    ctx.closePath()
+    ctx.fill()
+    ctx.strokeStyle = '#6b4b2d'
+    ctx.lineWidth = Math.max(1, 3 * s)
+    ctx.beginPath()
+    ctx.moveTo(x, y - h - w * 0.36)
+    ctx.lineTo(x, y - h)
+    ctx.stroke()
+  }
+
+  Renderer.prototype.hud = function (level, player) {
+    var ctx = this.ctx
+    var w = this.w
+    // 顶部信息
+    ctx.fillStyle = 'rgba(20,40,34,0.45)'
+    ctx.fillRect(0, 0, w, this.h * 0.075)
+    var mode = CR.Content.modes[level.levelIndex % 4]
+    this.text('第 ' + (level.levelIndex + 1) + ' 关 · ' + mode.name, w * 0.04, this.h * 0.036, w * 0.039, COL.text, 'left')
+    this.text(CR.Content.unitTypes[player.unitType].name, w * 0.52, this.h * 0.036, w * 0.034, CR.Content.unitTypes[player.unitType].color, 'center')
+    this.text('兵力 ' + player.count, w * 0.96, this.h * 0.036, w * 0.047, COL.gold, 'right')
+    var sub = '每兵' + player.maxHpPerUnit.toFixed(0) + '生命 · 单发' + player.damage.toFixed(2) + ' · ' + mode.desc
+    this.text(sub, w * 0.04, this.h * 0.083, w * 0.025, '#f4e6b0', 'left', 'normal')
+    this.text('金币 ' + (this.gameCoins == null ? '' : this.gameCoins), w * 0.96, this.h * 0.083, w * 0.028, COL.gold, 'right')
+    if (level.data.mode === 'timed') {
+      var remain = Math.max(0, C.timedSeconds - level.elapsed)
+      this.text('倒计时 ' + remain.toFixed(1) + 's', w / 2, this.h * 0.125, w * 0.045, remain < 20 ? '#ff7676' : '#ffffff')
+    } else if (level.data.mode === 'escort') {
+      var hp = level.data.escortHp == null ? C.escortHp : level.data.escortHp
+      this.text('粮车 ' + Math.ceil(hp) + '/' + C.escortHp, w / 2, this.h * 0.125, w * 0.037, '#ffe083')
+    } else if (level.data.mode === 'defend') {
+      this.text(level.traveled >= C.defendPrepZ ? '原地守城 · 逐场迎敌' : '前往布防线 · 仍可手动收兵', w / 2, this.h * 0.125, w * 0.032, '#d7f0db')
+    }
+    // 进度条
+    var ratio = Math.min(1, level.traveled / level.data.length)
+    ctx.fillStyle = 'rgba(30,40,35,0.35)'
+    ctx.fillRect(w * 0.08, this.h * 0.155, w * 0.84, 5)
+    ctx.fillStyle = COL.gold
+    ctx.fillRect(w * 0.08, this.h * 0.155, w * 0.84 * ratio, 5)
+  }
+
   Renderer.prototype.world = function (level, player, fx) {
-    this.level = level
+    var ctx = this.ctx
+    this.gameCoins = level && level._mainCoins
+    ctx.save()
+    if (fx.shake > 0) ctx.translate((Math.random() - 0.5) * fx.shake, (Math.random() - 0.5) * fx.shake)
     this.background(level.traveled)
-    var items = level.visibleItems()
-    for (var i = 0; i < items.length; i++) {
-      var it = items[i]
-      if (it.type === 'castle') this.castle(it)
-      else if (it.type === 'pickup') this.pickup(it)
-      else if (it.type === 'wave') this.wave(it)
-      else if (it.type === 'general') this.general(it)
+
+    // 远到近绘制
+    var drawables = []
+    var i
+    for (i = 0; i < level.data.pickups.length; i++) {
+      var p = level.data.pickups[i]
+      if (!p._taken) drawables.push({ z: p.z, kind: 'pickup', o: p })
     }
-    if (player.count > 0) this.player(player)
-    this.fx(fx)
-    this.hud(level.levelIndex, player)
+    for (i = 0; i < level.data.objects.length; i++) {
+      var o = level.data.objects[i]
+      if (o.type === 'wave' || o.type === 'general') {
+        if (!o._dead) drawables.push({ z: o.z, kind: o.type, o: o })
+      } else if (o.type === 'armyGate' || o.type === 'unitGate' || o.type === 'event') {
+        if (!o._done) drawables.push({ z: o.z, kind: o.type, o: o })
+      } else if (o.type === 'castle') drawables.push({ z: o.z, kind: 'castle', o: o })
+    }
+    drawables.sort(function (a, b) { return b.z - a.z })
+
+    for (i = 0; i < drawables.length; i++) {
+      var d = drawables[i]
+      var dz = d.z - level.traveled
+      if (dz < -C.contactRange || dz > C.viewFar) continue
+      if (d.kind === 'pickup') {
+        var p2 = d.o
+        var s = level.projScale(dz)
+        var px = p2.side === 'L' ? 0.12 : 0.88
+        this.pickup(level.projX(px, s), level.projY(dz), s, p2.value, p2.side)
+      } else if (d.kind === 'wave') this.wave(level, d.o)
+      else if (d.kind === 'general') {
+        var g = d.o
+        var gs = level.projScale(dz)
+        var gx = level.projX(0.5, gs)
+        var gy = level.projY(dz)
+        var gr = this.w * 0.036 * gs
+        this.general(gx, gy, gr, g.boss, level.elapsed * 4, g._phase || 1)
+        var bw = this.w * (g.boss ? 0.42 : 0.32) * gs
+        this.healthBar(gx, gy - gr * 1.85, bw, Math.max(5, 10 * gs), g.hp / g.maxHp, g.boss ? '#ffb020' : '#e23d46')
+        this.text((g.boss ? '最终BOSS ' : '武将 ') + CR.Content.unitTypes[g.unitType].name + (g.boss ? ' · 阶段' + (g._phase || 1) : ''), gx, gy - gr * 2.25, Math.max(11, this.w * (g.boss ? 0.04 : 0.032) * gs), g.boss ? '#ffd257' : '#ffd8d8')
+      } else if (d.kind === 'castle') this.castle(level, d.o)
+      else if (d.kind === 'armyGate') this.armyGate(level, d.o)
+      else if (d.kind === 'unitGate') this.unitGate(level, d.o)
+      else if (d.kind === 'event') this.eventObject(level, d.o)
+    }
+
+    this.escort(level, player)
+    this.army(level, player)
+    this.effects(fx)
+    ctx.restore()
+    this.hud(level, player)
+  }
+
+  // ---------- 菜单 / 结算 ----------
+  Renderer.prototype.panel = function () {
+    var ctx = this.ctx
+    ctx.fillStyle = COL.panel
+    ctx.fillRect(0, 0, this.w, this.h)
+  }
+
+  Renderer.prototype.buttonRect = function (yRatio) {
+    return { x: this.w * 0.18, y: this.h * yRatio, w: this.w * 0.64, h: this.h * 0.075 }
+  }
+
+  Renderer.prototype.button = function (r, label) {
+    var ctx = this.ctx
+    var grad = ctx.createLinearGradient(0, r.y, 0, r.y + r.h)
+    grad.addColorStop(0, '#ffd968')
+    grad.addColorStop(1, '#f0a51b')
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    var rad = r.h * 0.3
+    ctx.moveTo(r.x + rad, r.y)
+    ctx.arcTo(r.x + r.w, r.y, r.x + r.w, r.y + r.h, rad)
+    ctx.arcTo(r.x + r.w, r.y + r.h, r.x, r.y + r.h, rad)
+    ctx.arcTo(r.x, r.y + r.h, r.x, r.y, rad)
+    ctx.arcTo(r.x, r.y, r.x + r.w, r.y, rad)
+    ctx.closePath()
+    ctx.fill()
+    this.text(label, r.x + r.w / 2, r.y + r.h / 2, this.w * 0.052, '#4a2c06')
+  }
+
+  Renderer.prototype.upgradeRect = function (kind) {
+    return {
+      x: this.w * (kind === 'attack' ? 0.07 : 0.53),
+      y: this.h * 0.59,
+      w: this.w * 0.4,
+      h: this.h * 0.17
+    }
+  }
+
+  Renderer.prototype.upgradeButton = function (r, title, desc, top, bottom) {
+    var ctx = this.ctx
+    var grad = ctx.createLinearGradient(0, r.y, 0, r.y + r.h)
+    grad.addColorStop(0, top)
+    grad.addColorStop(1, bottom)
+    ctx.fillStyle = grad
+    ctx.fillRect(r.x, r.y, r.w, r.h)
+    ctx.strokeStyle = '#ffe6a0'
+    ctx.lineWidth = 2
+    ctx.strokeRect(r.x, r.y, r.w, r.h)
+    this.text(title, r.x + r.w / 2, r.y + r.h * 0.32, this.w * 0.045, '#ffffff')
+    this.text(desc, r.x + r.w / 2, r.y + r.h * 0.68, this.w * 0.029, '#fff4cf', 'center', 'normal')
+  }
+
+  Renderer.prototype.campTalentRect = function (idx) {
+    return { x: this.w * (0.04 + idx * 0.32), y: this.h * 0.26, w: this.w * 0.28, h: this.h * 0.18 }
+  }
+
+  Renderer.prototype.campShopRect = function (idx) {
+    return { x: this.w * (0.08 + idx * 0.44), y: this.h * 0.52, w: this.w * 0.4, h: this.h * 0.13 }
+  }
+
+  Renderer.prototype.campNextRect = function () {
+    return { x: this.w * 0.2, y: this.h * 0.75, w: this.w * 0.6, h: this.h * 0.075 }
+  }
+
+  Renderer.prototype.camp = function (game) {
+    this.panel()
+    this.title('战后营地', this.h * 0.1, 0.085, COL.gold)
+    this.line('金币 ' + game.coins + ' · 先选天赋，装备自愿购买', this.h * 0.17, 0.033, '#e8eadf')
+    this.line('天赋三选一', this.h * 0.225, 0.04, '#ffffff')
+    for (var i = 0; i < game.talentChoice.length; i++) {
+      var t = game.talentChoice[i]
+      var r = this.campTalentRect(i)
+      var selected = game.talentSelected === t.id
+      this.ctx.fillStyle = selected ? '#267b55' : '#29433b'
+      this.ctx.fillRect(r.x, r.y, r.w, r.h)
+      this.ctx.strokeStyle = selected ? '#ffe07a' : '#729083'
+      this.ctx.lineWidth = selected ? 3 : 1
+      this.ctx.strokeRect(r.x, r.y, r.w, r.h)
+      this.text(t.name, r.x + r.w / 2, r.y + r.h * 0.28, this.w * 0.043, selected ? '#ffe07a' : '#ffffff')
+      this.text(t.desc, r.x + r.w / 2, r.y + r.h * 0.62, this.w * 0.027, '#dce9df', 'center', 'normal')
+      if (selected) this.text('已选择', r.x + r.w / 2, r.y + r.h * 0.86, this.w * 0.024, '#ffe07a')
+    }
+    if (!game.talentChoice.length) this.line('全部天赋已学完，可直接下一关', this.h * 0.34, 0.035, '#ffe07a')
+    this.line('装备商店（可不买）', this.h * 0.48, 0.036, '#ffffff')
+    for (var j = 0; j < game.shopChoice.length; j++) {
+      var item = game.shopChoice[j]
+      var sr = this.campShopRect(j)
+      var owned = game.equipment.indexOf(item.id) >= 0
+      this.ctx.fillStyle = owned ? '#345146' : (game.coins >= item.cost ? '#71521d' : '#403d35')
+      this.ctx.fillRect(sr.x, sr.y, sr.w, sr.h)
+      this.ctx.strokeStyle = owned ? '#8fd4a9' : '#c7a85d'
+      this.ctx.strokeRect(sr.x, sr.y, sr.w, sr.h)
+      this.text(item.name + ' · ' + item.cost + '金币', sr.x + sr.w / 2, sr.y + sr.h * 0.27, this.w * 0.034, '#ffe3a0')
+      this.text(item.desc, sr.x + sr.w / 2, sr.y + sr.h * 0.58, this.w * 0.028, '#ffffff', 'center', 'normal')
+      this.text(owned ? '已购买' : (game.coins >= item.cost ? '点击购买' : '金币不足'), sr.x + sr.w / 2, sr.y + sr.h * 0.84, this.w * 0.024, '#d8e4d9', 'center', 'normal')
+    }
+    this.button(this.campNextRect(), game.talentSelected || !game.talentChoice.length ? '进入下一关' : '请先选择天赋')
+    this.line('装备与天赋将在下一关生效 · 失败重试恢复检查点', this.h * 0.88, 0.027, '#cfd6cf')
   }
 
   CR.Renderer = Renderer
