@@ -1,40 +1,28 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>倍增兵团 · 在线试玩</title>
-  <style>
-    html, body {
-      margin: 0; padding: 0; height: 100%;
-      background: #101318;
-      display: flex; align-items: center; justify-content: center;
-      font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
-      overflow: hidden;
-    }
-    #game {
-      display: block;
-      width: min(430px, 100vw);
-      height: 100vh;
-      max-height: 920px;
-      background: #f3d9a6;
-      touch-action: none;
-      box-shadow: 0 0 40px rgba(0,0,0,0.55);
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>倍增兵团 · 自测</title>
+<style>
+  html,body{margin:0;padding:0;background:#0b1412;height:100%;overflow:hidden}
+  body{display:flex;align-items:center;justify-content:center}
+  #stage{position:relative;box-shadow:0 0 40px #000}
+  canvas{display:block;touch-action:none}
+  #tip{position:fixed;left:0;right:0;bottom:6px;text-align:center;color:#7d938a;font:12px sans-serif;pointer-events:none}
+</style>
 </head>
 <body>
-  <canvas id="game"></canvas>
-  <!-- 与微信小游戏 game.js 相同的加载顺序，同一套代码双端运行 -->
-  <script src="src/platform.js?v=20261109a"></script>
-  <script src="src/config.js?v=20261109a"></script>
-  <script src="src/logic.js?v=20261109a"></script>
-  <script src="src/level.js?v=20261109a"></script>
-  <script src="src/entities.js?v=20261109a"></script>
-  <script src="src/render.js?v=20261109a"></script>
-  <script src="src/main.js?v=20261109a"></script>
-  <script>
-    window.__game = new window.CR.Main()
-  </script>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div id="tip">本地自测 · 鼠标按住左右拖动 = 手指滑动</div>
+<script src="../src/platform.js?v=20261109b"></script>
+<script src="../src/config.js?v=20261109b"></script>
+<script src="../src/content.js?v=20261109b"></script>
+<script src="../src/logic.js?v=20261109b"></script>
+<script src="../src/level.js?v=20261109b"></script>
+<script src="../src/entities.js?v=20261109b"></script>
+<script src="../src/render.js?v=20261109b"></script>
+<script src="../src/main.js?v=20261109b"></script>
+<script>window.__game = new CR.Main();</script>
 </body>
 </html>
