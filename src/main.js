@@ -1,7 +1,3 @@
-/**
- * 主控：状态机（菜单/进行中/胜利/失败）、主循环、指针操控、事件结算与界面切换。
- * 三国小小兵玩法：左右收编兵牌，红兵潮/武将持续近战群殴。
- */
 (function (global) {
   var CR = (global.CR = global.CR || {})
   var C = CR.CONFIG
@@ -26,6 +22,14 @@
     this.player = null
     this.attackLevel = 0
     this.vitalityLevel = 0
+    this.coins = 0
+    this.equipment = []
+    this.talents = []
+    this.talentChoice = []
+    this.shopChoice = []
+    this.talentSelected = ''
+    this.checkpoint = null
+    this.eventLog = []
     this.state = S.MENU
     this.lastTs = 0
     this.calibrated = false
@@ -95,23 +99,45 @@
       else if (inRect(p, this.renderer.upgradeRect('vitality'))) this.chooseUpgrade('vitality')
       return
     }
+    if (this.state === S.CAMP) {
+      for (var i = 0; i < this.talentChoice.length; i++) {
+        if (inRect(p, this.renderer.campTalentRect(i))) { this.chooseTalent(i); return }
+      }
+      for (var j = 0; j < this.shopChoice.length; j++) {
+        if (inRect(p, this.renderer.campShopRect(j))) { this.buyEquipment(j); return }
+      }
+      if (inRect(p, this.renderer.campNextRect())) this.nextLevel()
+      return
+    }
     if (this.state === S.LOSE) {
       if (inRect(p, this.renderer.buttonRect(0.66))) this.startLevel(this.level.levelIndex)
     }
   }
 
   Main.prototype.startLevel = function (idx) {
-    // 从主菜单开始新一局时清零成长；重试当前关保留此前已选升级
-    if (this.state === S.MENU && idx === 0) {
+    var retrying = this.state === S.LOSE && this.checkpoint && this.checkpoint.levelIndex === idx
+    if (retrying) {
+      this.coins = this.checkpoint.coins
+      this.equipment = this.checkpoint.equipment.slice()
+      this.talents = this.checkpoint.talents.slice()
+    } else if (this.state === S.MENU && idx === 0) {
       this.attackLevel = 0
       this.vitalityLevel = 0
+      this.coins = 0
+      this.equipment = []
+      this.talents = []
     }
+    this.checkpoint = { levelIndex: idx, coins: this.coins, equipment: this.equipment.slice(), talents: this.talents.slice() }
     var data = this.level.load(idx)
+    data.escortHp = C.escortHp
     this.player = new CR.Entities.Player(this.w, this.h, data.start, {
       attackLevel: this.attackLevel,
-      vitalityLevel: this.vitalityLevel
+      vitalityLevel: this.vitalityLevel,
+      equipment: this.equipment,
+      talents: this.talents
     })
     this.fx.clear()
+    this.talentSelected = ''
     this.state = S.PLAYING
   }
 
@@ -120,6 +146,30 @@
     if (kind === 'attack') this.attackLevel++
     else if (kind === 'vitality') this.vitalityLevel++
     else return
+    this.talentChoice = CR.Logic.talentChoices(this.level.levelIndex, this.talents)
+    this.shopChoice = CR.Content.equipment.filter(function (e) { return this.equipment.indexOf(e.id) < 0 }, this).slice(0, 2)
+    this.talentSelected = ''
+    this.state = S.CAMP
+  }
+
+  Main.prototype.chooseTalent = function (idx) {
+    if (this.state !== S.CAMP || this.talentSelected) return
+    var talent = this.talentChoice[idx]
+    if (!talent || this.talents.indexOf(talent.id) >= 0) return
+    this.talents.push(talent.id)
+    this.talentSelected = talent.id
+  }
+
+  Main.prototype.buyEquipment = function (idx) {
+    if (this.state !== S.CAMP) return
+    var item = this.shopChoice[idx]
+    if (!item || this.equipment.indexOf(item.id) >= 0 || this.coins < item.cost) return
+    this.coins -= item.cost
+    this.equipment.push(item.id)
+  }
+
+  Main.prototype.nextLevel = function () {
+    if (this.state !== S.CAMP || (!this.talentSelected && this.talentChoice.length)) return
     this.startLevel(this.level.levelIndex + 1)
   }
 
@@ -142,17 +192,32 @@
   Main.prototype.handleEvents = function (events) {
     for (var i = 0; i < events.length; i++) {
       var e = events[i]
+      this.eventLog.push({ type: e.type, reason: e.reason || '', phase: e.phase || 0, t: this.level.elapsed })
+      if (e.coins) {
+        var gain = Math.max(0, Math.round(e.coins * (this.player ? this.player.coinMultiplier : 1)))
+        this.coins += gain
+      }
       if (e.type === 'pickup') {
         this.player.addPulse()
         var ringColor = e.item.side === 'R' ? C.color.plaqueGold : C.color.playerLight
         this.fx.addRing(e.x, e.y, ringColor)
         this.fx.addFloat('+' + e.value, e.x, e.y - 30, ringColor, true)
+      } else if (e.type === 'armyGate') {
+        this.fx.addFloat(e.text, e.x, e.y - 30, C.color.gold, true)
+      } else if (e.type === 'unitGate') {
+        this.fx.addFloat(CR.Content.unitTypes[e.unitType].name, e.x, e.y - 30, CR.Content.unitTypes[e.unitType].color, true)
+      } else if (e.type === 'randomEvent') {
+        this.fx.addFloat(e.event.name + ' ' + e.event.desc, e.x, e.y - 30, C.color.gold, true)
       } else if (e.type === 'waveClear') {
         this.fx.addBurst(e.x, e.y, C.color.enemy, 24)
-        this.fx.addFloat('全歼', e.x, e.y - 40, '#ffd9d9', true)
+        this.fx.addFloat('全歼 +' + e.coins + '金币', e.x, e.y - 40, '#ffd9d9', true)
       } else if (e.type === 'generalDown') {
         this.fx.addBurst(e.x, e.y - this.w * 0.1, C.color.gold, 36)
-        this.fx.addFloat('武将击破', this.player.x, this.level.groundY - 120, C.color.gold, true)
+        this.fx.addFloat('武将击破 +' + e.coins + '金币', this.player.x, this.level.groundY - 120, C.color.gold, true)
+      } else if (e.type === 'generalSkill' || e.type === 'bossPhase') {
+        this.fx.addRing(e.x, e.y, '#ff5b52')
+        this.fx.addFloat(e.type === 'bossPhase' ? 'Boss阶段 ' + e.phase : '武将横扫', e.x, e.y - 60, '#ff8a8d', true)
+        this.fx.shake = 8
       } else if (e.type === 'lose') {
         this.state = S.LOSE
       } else if (e.type === 'levelComplete') {
@@ -178,10 +243,11 @@
     if (this.state === S.MENU) {
       r.background(0)
       r.panel()
-      r.title('倍增兵团', this.h * 0.25, 0.125, C.color.gold)
-      r.line('左右拖动收编兵牌，末将阵亡即通关', this.h * 0.38, 0.042)
-      r.line('每关免费强化攻击或士兵体质', this.h * 0.435, 0.042)
-      r.line('远程射击无损，近战伤亡由敌军攻速决定', this.h * 0.5, 0.032, '#cfd6cf')
+      r.title('倍增兵团', this.h * 0.2, 0.115, C.color.gold)
+      r.line('手动收兵 · 倍率门 · 兵种克制', this.h * 0.32, 0.041)
+      r.line('护送 / 守城 / 限时 · 随机事件', this.h * 0.385, 0.036)
+      r.line('武将技能与Boss三阶段', this.h * 0.445, 0.036)
+      r.line('金币装备 · 天赋三选一 · 攻击体质成长', this.h * 0.505, 0.031, '#cfd6cf')
       r.button(r.buttonRect(0.66), '开始游戏')
       return
     }
@@ -191,16 +257,18 @@
     if (this.state === S.WIN) {
       r.panel()
       r.title('Boss击破！', this.h * 0.26, 0.105, C.color.gold)
-      r.line('剩余兵力：' + Math.round(this.player.count), this.h * 0.36, 0.05)
-      r.line('免费选一项强化，立即进入下一关', this.h * 0.45, 0.038, '#e9eee9')
+      r.line('剩余兵力：' + Math.round(this.player.count) + ' · 金币：' + this.coins, this.h * 0.36, 0.045)
+      r.line('先选攻击或体质，再进入战后营地', this.h * 0.45, 0.036, '#e9eee9')
       r.line('当前：攻击Lv.' + this.attackLevel + ' · 体质Lv.' + this.vitalityLevel, this.h * 0.5, 0.035, '#cfd6cf')
       r.upgradeButton(r.upgradeRect('attack'), '攻击强化', '子弹伤害 +25%', '#d89a22', '#a66c12')
       r.upgradeButton(r.upgradeRect('vitality'), '体质强化', '每兵生命 +1', '#258fda', '#1769a8')
+    } else if (this.state === S.CAMP) {
+      r.camp(this)
     } else if (this.state === S.LOSE) {
       r.panel()
-      r.title('兵力打光了', this.h * 0.3, 0.1, '#ff8a8d')
-      r.line('左右多吃兵牌壮大兵力，再去群殴', this.h * 0.42, 0.044)
-      r.line('武将血厚，兵少别硬冲', this.h * 0.475, 0.038, '#cfd6cf')
+      r.title(this.level.data.mode === 'escort' && this.level.data.escortHp <= 0 ? '粮车被毁' : '兵力打光了', this.h * 0.3, 0.1, '#ff8a8d')
+      r.line('手动选门与兵种，利用克制减少伤亡', this.h * 0.42, 0.04)
+      r.line('重试恢复本关金币、装备和天赋检查点', this.h * 0.475, 0.032, '#cfd6cf')
       r.button(r.buttonRect(0.66), '重新挑战')
     }
   }
