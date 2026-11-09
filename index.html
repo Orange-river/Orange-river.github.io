@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>倍增兵团 · 在线试玩</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: #101318;
+      display: flex; align-items: center; justify-content: center;
+      font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+    }
+    #game {
+      display: block;
+      width: min(430px, 100vw);
+      height: 100vh;
+      max-height: 920px;
+      background: #f3d9a6;
+      touch-action: none;
+      box-shadow: 0 0 40px rgba(0,0,0,0.55);
+    }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <!-- 与微信小游戏 game.js 相同的加载顺序，同一套代码双端运行 -->
+  <script src="src/platform.js?v=20261106d"></script>
+  <script src="src/config.js?v=20261106d"></script>
+  <script src="src/logic.js?v=20261106d"></script>
+  <script src="src/level.js?v=20261106d"></script>
+  <script src="src/entities.js?v=20261106d"></script>
+  <script src="src/render.js?v=20261106d"></script>
+  <script src="src/main.js?v=20261106d"></script>
+  <script>
+    window.__game = new window.CR.Main()
+  </script>
+</body>
+</html>
