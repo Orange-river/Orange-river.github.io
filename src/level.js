@@ -55,7 +55,7 @@
     var dz = z - this.traveled
     var d = Math.max(0, dz)
     var s = C.perspectiveK / (C.perspectiveK + d)
-    return { dz: dz, s: s, sy: this.horizonY + (this.groundY - horizonY) * s }
+    return { dz: dz, s: s, sy: this.horizonY + (this.groundY - this.horizonY) * s }
   }
 
   Level.prototype.projX = function (x, s) { return this.w / 2 + (x - this.w / 2) * s }
