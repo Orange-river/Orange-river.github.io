@@ -573,7 +573,7 @@
     for (var i = 0; i < fx.floaters.length; i++) {
       var f = fx.floaters[i]
       ctx.globalAlpha = Math.max(0, f.life / f.maxLife)
-      strokeText(this.ctx, f.text, f.x, f.y,
+      strokeText(ctx, f.text, f.x, f.y,
         'bold ' + Math.round(this.w * (f.big ? 0.085 : 0.06)) + 'px Arial', f.color)
       ctx.globalAlpha = 1
     }
