@@ -1,281 +1,274 @@
+/**
+ * 运行时关卡：手动收兵/选门、兵种切换、持续战斗、技能、随机事件与四种关卡目标。
+ * 所有可收集对象均带一次性完成标记，仿真与实战共用 Logic.battleStep。
+ */
 (function (global) {
   var CR = (global.CR = global.CR || {})
   var C = CR.CONFIG
+  var L = CR.Logic
+  var Content = CR.Content
 
   function Level (w, h) {
-    this.w = w
-    this.h = h
-    this.horizonY = h * C.horizonRatio
-    this.groundY = h * C.playerLineRatio
     this.data = null
-    this.traveled = 0
-    this.speed = C.baseSpeed
     this.levelIndex = 0
-    this.elapsed = 0
+    this.traveled = 0
     this.completed = false
     this.failed = false
+    this.speed = C.baseSpeed
+    this.mode = 'standard'
+    this.timeLeft = 0
+    this.escortHp = C.escortMaxHp
+    this.setMetrics(w, h)
   }
 
-  Level.prototype.load = function (idx) {
-    this.data = CR.Logic.generateLevel(idx)
-    this.levelIndex = idx
+  Level.prototype.setMetrics = function (w, h) {
+    this.w = w; this.h = h
+    this.horizonY = h * C.horizonRatio
+    this.groundY = h * C.playerLineRatio
+    this.playerLineY = this.groundY
+  }
+  Level.prototype.resize = function (w, h) { this.setMetrics(w, h) }
+
+  Level.prototype.load = function (levelIndex) {
+    this.levelIndex = levelIndex
+    this.data = L.generateLevel(levelIndex)
+    this.mode = this.data.mode || 'standard'
     this.traveled = 0
-    this.speed = Math.min(C.maxSpeed, C.baseSpeed + idx * C.speedGrowthPerLevel)
-    this.elapsed = 0
     this.completed = false
     this.failed = false
+    this.timeLeft = this.data.timeLimit || C.modeTimeLimit
+    this.escortHp = C.escortMaxHp
+    this.defendPrepZ = 3600
+    this.defendReady = false
+    this.speed = Math.min(C.maxSpeed, C.baseSpeed + levelIndex * C.speedGrowthPerLevel)
+    for (var i = 0; i < this.data.items.length; i++) {
+      var it = this.data.items[i]
+      it._done = false; it._dead = false; it._proj = null; it._engaged = false
+      it._fxKills = 0; it._adv = 0; it._melee = false; it._skillClock = 0; it._skillFx = 0
+      it._phase = 1; it._defendActive = false
+      if (it.type === 'wave') { it._hp = it.count; it._maxHp = it.count }
+      if (it.type === 'general') { it._hp = it.hp; it._maxHp = it.maxHp }
+    }
     return this.data
   }
 
-  Level.prototype.resize = function (w, h) {
-    this.w = w
-    this.h = h
-    this.horizonY = h * C.horizonRatio
-    this.groundY = h * C.playerLineRatio
+  Level.prototype.trackLeft = function () { return this.w * C.trackMarginRatio }
+  Level.prototype.trackWidth = function () { return this.w * (1 - 2 * C.trackMarginRatio) }
+  Level.prototype.project = function (z) {
+    var dz = z - this.traveled
+    var d = Math.max(0, dz)
+    var s = C.perspectiveK / (C.perspectiveK + d)
+    return { dz: dz, s: s, sy: this.horizonY + (this.groundY - this.horizonY) * s }
+  }
+  Level.prototype.projX = function (x, s) { return this.w / 2 + (x - this.w / 2) * s }
+  Level.prototype.playerRatio = function (player) { return (player.x - this.trackLeft()) / this.trackWidth() }
+  Level.prototype.pickupAnchorX = function (item) {
+    var tl = this.trackLeft(), tw = this.trackWidth()
+    return item.side === 'L' ? tl + tw * 0.11 : tl + tw * 0.89
+  }
+  Level.prototype.sideAnchorX = function (side) {
+    var tl = this.trackLeft(), tw = this.trackWidth()
+    return side === 'L' ? tl + tw * 0.25 : tl + tw * 0.75
+  }
+  Level.prototype.enemyBounds = function (item) {
+    var tl = this.trackLeft(), tw = this.trackWidth()
+    var cx = tl + item.centerRatio * tw, hw = item.widthRatio * tw / 2
+    return { cx: cx, hw: hw, left: cx - hw, right: cx + hw }
   }
 
-  // dz=0 在脚底；dz 越大越远越小，形成纵深
-  Level.prototype.projScale = function (dz) {
-    var d = Math.max(0, Math.min(C.viewFar, dz))
-    return C.perspectiveK / (C.perspectiveK + d * 0.55)
-  }
-
-  Level.prototype.projX = function (xNorm, s) {
-    return this.w / 2 + (xNorm - 0.5) * this.w * s
-  }
-
-  Level.prototype.projY = function (dz) {
-    var d = Math.max(0, Math.min(C.viewFar, dz))
-    var t = Math.pow(d / C.viewFar, 0.72)
-    return this.groundY - t * (this.groundY - this.horizonY)
+  Level.prototype.visibleItems = function () {
+    var out = []
+    if (!this.data) return out
+    for (var i = 0; i < this.data.items.length; i++) {
+      var it = this.data.items[i]
+      if ((it.type === 'wave' || it.type === 'general') && it._dead) continue
+      if ((it.type === 'pickup' || it.type === 'gate' || it.type === 'troopGate' || it.type === 'event') && it._done) continue
+      var pr = it._proj || this.project(it.z)
+      if (pr.dz > -90 && pr.dz < C.viewFar) out.push(it)
+    }
+    out.sort(function (a, b) { return (b._proj ? b._proj.dz : b.z) - (a._proj ? a._proj.dz : a.z) })
+    return out
   }
 
   Level.prototype.liveEnemies = function () {
     if (!this.data) return []
-    var out = []
-    for (var i = 0; i < this.data.objects.length; i++) {
-      var o = this.data.objects[i]
-      if ((o.type === 'wave' || o.type === 'general') && !o._dead) out.push(o)
-    }
-    return out
+    return this.data.items.filter(function (it) { return (it.type === 'wave' || it.type === 'general') && !it._dead })
   }
 
-  Level.prototype.playerNorm = function (player) {
-    return player.x / this.w
+  Level.prototype.defeatedEnemyCount = function () {
+    if (!this.data) return 0
+    return this.data.items.filter(function (it) { return (it.type === 'wave' || it.type === 'general') && it._dead }).length
   }
 
-  Level.prototype.enemyBounds = function (o) {
-    var width = o.type === 'general' ? 0.2 : C.waveColsRatio
-    return { left: 0.5 - width / 2, right: 0.5 + width / 2, cx: 0.5 }
-  }
-
-  Level.prototype.horizontalContact = function (o, pn) {
-    var b = this.enemyBounds(o)
-    return pn >= b.left - 0.1 && pn <= b.right + 0.1
-  }
-
-  Level.prototype.applyPickup = function (player, p) {
-    var n = Math.max(1, Math.round(p.value * (player.recruitMultiplier || 1)))
-    player.addUnits(n)
-    player.addPulse()
-    return n
+  Level.prototype.pushLose = function (events, reason) {
+    if (this.completed || this.failed) return
+    this.failed = true
+    events.push({ type: 'lose', reason: reason || 'army' })
   }
 
   Level.prototype.update = function (dt, player) {
     var events = []
     if (!this.data || this.completed || this.failed) return events
-    this.elapsed += dt
-    if (this.data.mode === 'timed' && this.elapsed >= C.timedSeconds) {
-      this.failed = true
-      events.push({ type: 'lose', reason: 'timeout' })
-      return events
-    }
-    // 进入交战射程即驻足群殴，打死当前目标才继续前进
-    var engaged = null
-    var engagedDz = Infinity
-    var live = this.liveEnemies()
-    var pn = this.playerNorm(player)
-    for (var i = 0; i < live.length; i++) {
-      var o = live[i]
-      var dz = o.z - this.traveled
-      if (this.data.mode === 'defend' && !o._defendActive) continue
-      if (dz <= C.engageRange && dz > -C.contactRange && this.horizontalContact(o, pn) && dz < engagedDz) {
-        engaged = o
-        engagedDz = dz
-      }
-    }
-    var defendingReady = this.data.mode === 'defend' && this.traveled >= C.defendPrepZ
-    if (!engaged && !defendingReady) this.traveled = Math.min(this.data.length + 400, this.traveled + this.speed * dt)
 
-    // 玩家横向贴到左/右通道才收兵；中路不会自动全吃
-    for (var j = 0; j < this.data.pickups.length; j++) {
-      var p = this.data.pickups[j]
-      if (p._taken) continue
-      var pdz = p.z - this.traveled
-      if (pdz < -C.pickupCollectDz) {
-        p._taken = true
-        continue
+    // 守城先手动布防，抵达阵线后不再前进，上一场清空后下一场原地接续
+    if (this.mode === 'defend') {
+      if (!this.defendReady && this.traveled >= this.defendPrepZ) {
+        this.defendReady = true
+        this.speed = 0
       }
-      if (Math.abs(pdz) <= C.pickupCollectDz) {
-        var px = p.side === 'L' ? 0.12 : 0.88
-        if (Math.abs(pn - px) < C.pickupSideRatio) {
-          p._taken = true
-          var gained = this.applyPickup(player, p)
-          var s = this.projScale(pdz)
-          events.push({
-            type: 'pickup', value: gained,
-            x: this.projX(px, s), y: this.projY(pdz),
-            item: p
-          })
+      if (this.defendReady) {
+        var next = this.liveEnemies()[0]
+        if (next && !next._defendActive) {
+          next._defendActive = true
+          next.z = this.traveled + C.engageRange - 35
+          next._adv = 0
         }
       }
     }
 
-    // 所有门与事件均须明确贴边；居中不会自动生效
-    for (var g = 0; g < this.data.objects.length; g++) {
-      var gate = this.data.objects[g]
-      if ((gate.type !== 'armyGate' && gate.type !== 'unitGate' && gate.type !== 'event') || gate._done) continue
-      var gdz = gate.z - this.traveled
-      if (gdz < -C.pickupCollectDz) { gate._done = true; continue }
-      if (Math.abs(gdz) > C.pickupCollectDz) continue
-      var side = pn < 0.38 ? 'left' : (pn > 0.62 ? 'right' : '')
-      if (!side) continue
-      gate._done = true
-      var gs = this.projScale(gdz)
-      var gx = this.projX(side === 'left' ? 0.25 : 0.75, gs)
-      var gy = this.projY(gdz)
-      if (gate.type === 'armyGate') {
-        var applied = CR.Logic.applyArmyGate(player.count, player.hp, player.maxHpPerUnit, gate[side])
-        player.hp = applied.hp
-        player.syncCount()
-        player.rebuildFormation()
-        events.push({ type: 'armyGate', x: gx, y: gy, text: gate[side].label, delta: applied.delta })
-      } else if (gate.type === 'unitGate') {
-        player.unitType = gate[side]
-        events.push({ type: 'unitGate', x: gx, y: gy, unitType: player.unitType })
-      } else {
-        var ev = gate.event
-        if (ev.units) {
-          if (ev.units > 0) player.addUnits(Math.max(1, Math.round(ev.units * player.recruitMultiplier)))
-          else {
-            player.hp = Math.max(0, player.hp + ev.units * player.maxHpPerUnit)
-            player.syncCount()
-            player.rebuildFormation()
-          }
-        }
-        events.push({ type: 'randomEvent', x: gx, y: gy, event: ev, coins: ev.coins || 0 })
+    var fighting = false
+    for (var fi = 0; fi < this.data.items.length; fi++) {
+      var fe = this.data.items[fi]
+      if ((fe.type === 'wave' || fe.type === 'general') && !fe._dead && (this.mode !== 'defend' || fe._defendActive)) {
+        var fd = (fe.z - (fe._adv || 0)) - this.traveled
+        if (fd <= C.engageRange && fd > -400) { fighting = true; break }
       }
     }
+    if (!fighting && (this.mode !== 'defend' || !this.defendReady)) this.traveled += this.speed * dt
+    if (this.mode === 'timed') this.timeLeft = Math.max(0, this.timeLeft - dt)
 
-    // 逐敌结算：远程先打，敌人冲锋拐弯贴脸后近战；武将按更大接敌面折算
-    for (var k = 0; k < live.length; k++) {
-      var e = live[k]
-      var edz = e.z - this.traveled
-      if (this.data.mode === 'defend' && !e._defendActive) continue
-      if (edz <= C.engageRange && edz > -C.contactRange && this.horizontalContact(e, pn)) {
-        e._engaged = true
-        e._proj = { s: this.projScale(edz), sy: this.projY(edz) }
-        // 前段：敌人冲锋，我方远程无损射击
-        var charge = edz > C.contactRange
-        if (charge) e.z = Math.max(this.traveled + C.contactRange, e.z - C.enemyChargeSpeed * dt)
-        var st = {
-          playerHp: player.hp,
-          playerMaxHpPerUnit: player.maxHpPerUnit,
-          playerDamage: player.damage,
-          enemyHp: e.hp,
-          enemyMaxHp: e.maxHp,
-          enemyUnits: e.size,
-          playerDamageDone: 0,
-          enemyDamageDone: 0
-        }
-        var phaseRate = e.boss ? C.bossPhaseRate[Math.max(0, (e._phase || 1) - 1)] : 1
-        CR.Logic.battleStep(st, dt, {
-          meleeCap: charge ? 0 : (e.type === 'general' ? 34 : 18),
-          unitType: player.unitType,
-          enemyType: e.unitType,
-          damageMultiplier: player.damageMultiplier * player.fireRateMultiplier,
-          incomingMultiplier: player.incomingMultiplier,
-          enemyMeleeRateMultiplier: phaseRate
-        })
-        player.hp = st.playerHp
-        player.syncCount()
-        e.hp = st.enemyHp
-        e._liveCount = st.enemyCount
-        e._fxKills = Math.max(0, Math.round(st.playerDamageDone))
-        if (e.type === 'general') {
-          e._skillClock = (e._skillClock || 0) + dt
-          if (e._skillClock >= C.generalSkillPeriod && e.hp > 0) {
-            e._skillClock -= C.generalSkillPeriod
-            player.hp = Math.max(0, player.hp - Math.max(1, player.hp * C.generalSkillRatio))
-            player.syncCount()
-            events.push({ type: 'generalSkill', x: this.w / 2, y: this.projY(edz), name: '横扫', target: e })
-          }
-        }
-        if (e.boss && e.hp > 0) {
-          var ratio = e.hp / e.maxHp
-          var nextPhase = ratio <= 0.33 ? 3 : (ratio <= 0.66 ? 2 : 1)
-          while ((e._phase || 1) < nextPhase && e.hp > 0) {
-            e._phase = (e._phase || 1) + 1
-            player.hp = Math.max(0, player.hp - Math.max(1, player.hp * C.bossPhaseSkillRatio))
-            player.syncCount()
-            events.push({ type: 'bossPhase', x: this.w / 2, y: this.projY(edz), phase: e._phase, target: e })
-          }
-        }
-        if (this.data.mode === 'escort') {
-          this.data.escortHp = Math.max(0, (this.data.escortHp == null ? C.escortHp : this.data.escortHp) - st.enemyDamageDone * C.escortDamageScale)
-        }
-        if (e.hp <= 0) {
-          e._dead = true
-          e._engaged = false
-          events.push({
-            type: e.type === 'general' ? 'generalDown' : 'waveClear',
-            x: this.projX(0.5, e._proj.s),
-            y: e._proj.sy,
-            boss: !!e.boss,
-            coins: e.boss ? C.bossCoin : (e.type === 'general' ? C.generalCoin : C.waveCoin),
-            target: e
-          })
-          if (e.boss) {
-            if (this.data.mode === 'escort' && this.data.escortHp <= 0) {
-              this.failed = true
-              events.push({ type: 'lose', reason: 'escort' })
-            } else {
-              this.completed = true
-              events.push({ type: 'levelComplete', boss: true })
+    var self = this
+    var ratio = this.playerRatio(player)
+    this.data.items.forEach(function (it) {
+      it._proj = self.project(it.z - (it._adv || 0))
+      var d = it._proj.dz
+      if (it.type === 'wave' || it.type === 'general') {
+        it._fxKills = 0
+        it._skillFx = Math.max(0, (it._skillFx || 0) - dt)
+      }
+
+      // 所有牌、门和事件都必须由玩家手动贴边选择，错过不自动补发
+      if (it.type === 'pickup' || it.type === 'gate' || it.type === 'troopGate' || it.type === 'event') {
+        if (it._done) return
+        if (d < -60) { it._done = true; return }
+        if (d <= C.pickupCollectDz) {
+          if (it.type === 'pickup') {
+            var onSide = it.side === 'L' ? ratio <= C.pickupSideRatio : ratio >= 1 - C.pickupSideRatio
+            if (onSide) {
+              var value = Math.max(1, Math.round(it.value * (player.recruitMultiplier || 1)))
+              L.addArmyUnits(player, value)
+              it._done = true
+              var ax = self.pickupAnchorX(it)
+              events.push({ type: 'pickup', item: it, value: value, x: self.projX(ax, it._proj.s), y: it._proj.sy })
             }
-            break
+          } else if (it.type === 'gate') {
+            var side = ratio <= C.gateSideRatio ? 'L' : (ratio >= 1 - C.gateSideRatio ? 'R' : null)
+            if (side) {
+              var option = side === 'L' ? it.left : it.right
+              var after = L.applyArmyGate(player, option)
+              it._done = true
+              events.push({ type: 'gate', item: it, side: side, option: option, value: after,
+                x: self.projX(self.sideAnchorX(side), it._proj.s), y: it._proj.sy })
+            }
+          } else if (it.type === 'troopGate') {
+            var troopSide = ratio <= C.gateSideRatio ? 'L' : (ratio >= 1 - C.gateSideRatio ? 'R' : null)
+            if (troopSide) {
+              player.unitType = troopSide === 'L' ? it.left : it.right
+              it._done = true
+              events.push({ type: 'troop', item: it, side: troopSide, unitType: player.unitType,
+                x: self.projX(self.sideAnchorX(troopSide), it._proj.s), y: it._proj.sy })
+            }
+          } else {
+            var eventSide = it.side === 'L' ? ratio <= C.pickupSideRatio : ratio >= 1 - C.pickupSideRatio
+            if (eventSide) {
+              var outcome = L.resolveEvent(it, player)
+              it._done = true
+              var ex = self.pickupAnchorX(it)
+              events.push({ type: 'event', item: it, outcome: outcome, coins: outcome.coins,
+                x: self.projX(ex, it._proj.s), y: it._proj.sy })
+            }
           }
         }
-      } else {
-        e._engaged = false
-        e._fxKills = 0
+        return
       }
-    }
 
-    if (this.data.mode === 'defend' && this.traveled >= C.defendPrepZ) {
-      var combats = this.data.objects.filter(function (o) { return o.type === 'wave' || o.type === 'general' })
-      var activeFound = false
-      for (var d = 0; d < combats.length; d++) {
-        if (!combats[d]._dead && !activeFound) {
-          if (!combats[d]._defendActive) {
-            combats[d]._defendActive = true
-            combats[d].z = this.traveled + C.engageRange - 20
-            events.push({ type: 'defendWave', index: d + 1 })
+      if (it._done || it._dead) return
+
+      if ((it.type === 'wave' || it.type === 'general') && !it._dead && (self.mode !== 'defend' || it._defendActive)) {
+        if (!it._engaged && d <= C.engageRange && d > -400) it._engaged = true
+        if (it._engaged) {
+          if (!it._melee) it._adv += C.enemyChargeSpeed * dt
+          var pratio = self.playerRatio(player)
+          it.centerRatio += (pratio - it.centerRatio) * Math.min(1, 3 * dt)
+          if (d <= 0) it._melee = true
+
+          var enemyRate = 1
+          if (it.skill === 'rage' && it._hp <= it._maxHp * 0.5) enemyRate *= 1.5
+          if (it.boss) enemyRate *= C.bossPhaseRate[it._phase - 1]
+          var mods = {
+            playerType: player.unitType, enemyType: it.unitType,
+            damage: player.damageMultiplier || 1, fireRate: player.fireRateMultiplier || 1,
+            incoming: player.incomingMultiplier || 1, enemyRate: enemyRate
           }
-          activeFound = true
+          var combat = L.battleStep(player, it._hp, dt, it._melee, player.attackLevel || 0, C, mods)
+          it._hp = Math.max(0, it._hp - combat.damage)
+          it._fxKills = combat.damage
+          it._enemyDamage = combat.taken
+          if (self.mode === 'escort' && it._melee) {
+            self.escortHp = Math.max(0, self.escortHp - combat.taken * C.escortDamageFactor)
+          }
+
+          // Boss阈值按顺序各触发一次；已经被当帧击杀时不补放阶段技
+          if (it.boss && it._hp > 0) {
+            var targetPhase = it._hp <= it._maxHp * 0.33 ? 3 : (it._hp <= it._maxHp * 0.66 ? 2 : 1)
+            while (it._phase < targetPhase && L.armyHp(player) > 0) {
+              it._phase++
+              it._skillFx = 0.8
+              var phaseDamage = Math.max(1, L.armyHp(player) * C.bossPhaseSkillRatio)
+              L.damageArmy(player, phaseDamage)
+              events.push({ type: 'bossPhase', item: it, phase: it._phase, damage: phaseDamage,
+                x: player.x, y: self.groundY - 100 })
+            }
+          }
+
+          // 普通武将横扫：固定周期、固定伤害比例，切关后计时清零
+          if (it.skill === 'sweep' && it._hp > 0 && L.armyHp(player) > 0) {
+            it._skillClock += dt
+            if (it._skillClock >= C.generalSkillInterval) {
+              it._skillClock -= C.generalSkillInterval
+              it._skillFx = 0.8
+              var skillDamage = Math.max(1, L.armyHp(player) * C.generalSkillHpRatio)
+              L.damageArmy(player, skillDamage)
+              events.push({ type: 'enemySkill', item: it, damage: skillDamage,
+                x: self.projX(self.enemyBounds(it).cx, it._proj.s), y: it._proj.sy })
+            }
+          }
+
+          if (it._hp <= 0) {
+            it._dead = true
+            var eb = self.enemyBounds(it)
+            if (it.type === 'wave') {
+              events.push({ type: 'waveClear', item: it, coins: C.waveCoinReward,
+                x: self.projX(eb.cx, it._proj.s), y: it._proj.sy })
+            } else {
+              events.push({ type: 'generalDown', item: it, coins: it.boss ? C.bossCoinReward : C.generalCoinReward,
+                x: self.projX(eb.cx, it._proj.s), y: it._proj.sy })
+              if (it.boss && !self.completed && !self.failed) {
+                if (self.mode === 'escort' && self.escortHp <= 0) self.pushLose(events, 'escort')
+                else { self.completed = true; events.push({ type: 'levelComplete', item: it }) }
+              }
+            }
+          }
         }
       }
-    }
 
-    // 最终Boss死亡当帧立即通关；上面已发事件，这里不再要求走到城堡
+      if (it.type === 'castle' && d <= 0) { it._done = true; events.push({ type: 'castle', item: it }) }
+    })
+
     if (!this.completed && !this.failed) {
-      if (this.data.mode === 'escort' && (this.data.escortHp == null ? C.escortHp : this.data.escortHp) <= 0) {
-        this.failed = true
-        events.push({ type: 'lose', reason: 'escort' })
-      } else if (player.hp <= 0 || player.count <= 0) {
-        this.failed = true
-        events.push({ type: 'lose' })
-      }
+      if (L.armyHp(player) <= 0) { player.count = 0; this.pushLose(events, 'army') }
+      else if (this.mode === 'escort' && this.escortHp <= 0) this.pushLose(events, 'escort')
+      else if (this.mode === 'timed' && this.timeLeft <= 0) this.pushLose(events, 'timeout')
     }
     return events
   }
