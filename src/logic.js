@@ -1,299 +1,358 @@
+/**
+ * 纯逻辑层：不依赖画布/DOM/wx，可被 Node 直接 require 做单元测试。
+ * 仿真与实战共用战斗公式；倍率门、兵种克制、装备、天赋和随机事件均可复现。
+ */
 (function (global) {
   var CR = (global.CR = global.CR || {})
-  var C = CR.CONFIG
-  var CONTENT = CR.Content
+  var CFG = CR.CONFIG
+  var Content = CR.Content
 
-  // 唯一伤害入口：我方射击与敌方近战完全独立；大军伤亡只取决于接敌上限和敌方攻速
-  // enemyUnits 是敌潮人数；武将按 warriorUnits 折算接敌面，避免大军被自身DPS放大反噬
-  function battleStep (state, dt, opts) {
-    opts = opts || {}
-    var playerHp = state.playerHp
-    var playerMaxHpPerUnit = state.playerMaxHpPerUnit || 1
-    var playerDamage = state.playerDamage || 1
-    var enemyHp = state.enemyHp
-    var enemyMaxHp = Math.max(1, state.enemyMaxHp || state.enemyHp)
-    var enemyUnits = Math.max(1, Math.round(state.enemyUnits || 1))
-    var meleeCap = Math.min(enemyUnits, Math.max(1, Math.round(opts.meleeCap || 20)))
-    var dps = Math.max(0, playerHp / playerMaxHpPerUnit) * C.fireRatePerUnit * playerDamage
-    dps *= opts.damageMultiplier || 1
-    var unitType = opts.unitType || 'shield'
-    var enemyType = opts.enemyType || 'shield'
-    var counter = CONTENT.unitTypes[unitType] && CONTENT.unitTypes[unitType].counter === enemyType
-      ? C.counterAdvantage
-      : (CONTENT.unitTypes[enemyType] && CONTENT.unitTypes[enemyType].counter === unitType ? C.counterDisadvantage : 1)
-    dps *= counter
-    var enemyDps = meleeCap * C.enemyMeleeRatePerUnit * (opts.enemyMeleeRateMultiplier || 1)
-    enemyDps *= opts.incomingMultiplier || 1
-    enemyHp = Math.max(0, enemyHp - dps * dt)
-    playerHp = Math.max(0, playerHp - enemyDps * dt)
-    state.playerHp = playerHp
-    state.enemyHp = enemyHp
-    state.playerCount = Math.max(0, Math.ceil(playerHp / playerMaxHpPerUnit))
-    state.enemyCount = Math.max(0, Math.ceil(enemyHp / enemyMaxHp * enemyUnits))
-    state.playerDamageDone = (state.playerDamageDone || 0) + dps * dt
-    state.enemyDamageDone = (state.enemyDamageDone || 0) + enemyDps * dt
-    state.dead = playerHp <= 0
-    state.won = enemyHp <= 0
-    return state
-  }
+  function clamp (v, min, max) { return v < min ? min : (v > max ? max : v) }
 
-  function applyArmyGate (count, hp, hpPerUnit, option) {
-    var nextCount = option.op === 'mul'
-      ? Math.max(1, Math.round(count * option.value))
-      : Math.max(0, count + option.value)
-    var delta = nextCount - count
-    return { count: nextCount, hp: Math.max(0, hp + delta * hpPerUnit), delta: delta }
-  }
-
-  function buildModifiers (equipment, talents) {
-    var mods = { damage: 1, fireRate: 1, incoming: 1, hpPerUnit: 0, recruit: 1, coins: 1 }
-    var all = (equipment || []).concat(talents || [])
-    for (var i = 0; i < all.length; i++) {
-      var id = all[i]
-      var def = null
-      var pools = [CONTENT.equipment, CONTENT.talents]
-      for (var p = 0; p < pools.length && !def; p++) {
-        for (var j = 0; j < pools[p].length; j++) if (pools[p][j].id === id) def = pools[p][j]
-      }
-      if (!def) continue
-      if (def.damage) mods.damage += def.damage
-      if (def.fireRate) mods.fireRate += def.fireRate
-      if (def.incoming) mods.incoming = Math.max(0.2, mods.incoming + def.incoming)
-      if (def.hp) mods.hpPerUnit += def.hp
-      if (def.recruit) mods.recruit += def.recruit
-      if (def.coins) mods.coins += def.coins
-    }
-    return mods
-  }
-
-  function talentChoices (levelIndex, owned) {
-    var available = CONTENT.talents.filter(function (t) { return owned.indexOf(t.id) < 0 })
-    var result = []
-    var cursor = (levelIndex * 2) % Math.max(1, available.length)
-    while (available.length && result.length < Math.min(3, available.length + result.length)) {
-      result.push(available.splice(cursor % available.length, 1)[0])
-      cursor += 2
-      if (result.length >= 3) break
-    }
-    return result
-  }
-
-  function randomEvent (levelIndex, slot) {
-    return CONTENT.events[Math.floor(rng(levelIndex * 97 + slot * 17)() * CONTENT.events.length)]
-  }
-
-  // 1..depth 排布纵深：后排不能在同一帧瞬间全部接敌
-  function formation (count, w, h) {
-    var spacing = w * C.unitSpacingRatio
-    var perRow = Math.max(4, Math.floor((w * 0.52) / spacing))
-    var rows = Math.ceil(count / perRow)
-    var depth = rows * spacing
-    var top = h * C.playerLineRatio - Math.min(h * C.formationDepthRatio, depth)
-    return { perRow: perRow, spacing: spacing, rows: rows, top: top }
-  }
-
-  // 确定性种子：同一关刷新布局一致，方便玩家背板与调优
-  function rng (seed) {
-    var s = seed >>> 0
+  function mulberry32 (seed) {
+    var a = seed >>> 0
     return function () {
-      s = (s + 0x6D2B79F5) | 0
-      var t = Math.imul(s ^ (s >>> 15), 1 | s)
+      a |= 0; a = (a + 0x6D2B79F5) | 0
+      var t = Math.imul(a ^ (a >>> 15), 1 | a)
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296
     }
   }
 
-  function hpToCount (hp, hpPerUnit) {
-    return Math.max(0, Math.ceil(hp / Math.max(1, hpPerUnit)))
+  function randRange (rng, min, max) { return min + rng() * (max - min) }
+  function pick (rng, arr) { return arr[Math.floor(rng() * arr.length)] }
+
+  function applyGate (count, option) {
+    var c = count
+    if (option.op === '*') c = c * option.value
+    else if (option.op === '+') c = c + option.value
+    else if (option.op === '-') c = c - option.value
+    return Math.max(0, Math.round(c))
   }
 
-  // 兵牌两侧循环展开，保证“左边连续+1、右边高值牌”的收兵选择一直存在
-  function makePickups (level, endZ, random) {
-    var arr = []
-    var i = 0
-    for (var z = C.pickupFirstZ; z < endZ; z += C.pickupSpacing) {
-      var big = C.rightBigValues[(i + level) % C.rightBigValues.length]
-      arr.push({ side: 'L', z: z, value: C.leftValue })
-      arr.push({ side: 'R', z: z, value: big })
-      i++
+  function gateLabel (option) {
+    if (option.op === '*') return '×' + option.value
+    if (option.op === '-') return '−' + option.value
+    return '+' + option.value
+  }
+
+  function attackMultiplier (attackLevel, cfg) {
+    cfg = cfg || CFG
+    return 1 + Math.max(0, attackLevel || 0) * cfg.attackDamagePerUpgrade
+  }
+
+  function armyHp (army) {
+    if (typeof army.hp === 'number') return army.hp
+    return Math.max(0, army.count) * (army.hpPerUnit || 1)
+  }
+
+  function addArmyUnits (army, value) {
+    value = Math.max(0, Math.round(value))
+    if (typeof army.addUnits === 'function') { army.addUnits(value); return }
+    army.count = Math.max(0, army.count + value)
+    if (typeof army.hp === 'number') army.hp += value * (army.hpPerUnit || 1)
+  }
+
+  function damageArmy (army, amount) {
+    amount = Math.max(0, amount)
+    if (typeof army.takeDamage === 'function') { army.takeDamage(amount); return }
+    if (typeof army.hp === 'number') {
+      army.hp = Math.max(0, army.hp - amount)
+      army.count = army.hp <= 0 ? 0 : Math.ceil(army.hp / (army.hpPerUnit || 1) - 1e-9)
+    } else army.count = Math.max(0, army.count - amount)
+  }
+
+  // 倍率或减法先换算成人数差，再同步总生命；同一道门只应由运行时调用一次
+  function applyArmyGate (army, option) {
+    var before = Math.max(0, army.count)
+    var after = applyGate(before, option)
+    var delta = after - before
+    if (delta > 0) addArmyUnits(army, delta)
+    else if (delta < 0) damageArmy(army, -delta * (army.hpPerUnit || 1))
+    return after
+  }
+
+  // 刀盾克骑兵、骑兵克弓手、弓手克刀盾；同兵种与未知兵种均为1倍
+  function unitCounter (attacker, defender, cfg) {
+    cfg = cfg || CFG
+    if (!attacker || !defender || attacker === defender) return 1
+    var a = Content.unit(attacker)
+    if (a.strongAgainst === defender) return cfg.counterAdvantage
+    var d = Content.unit(defender)
+    if (d.strongAgainst === attacker) return cfg.counterDisadvantage
+    return 1
+  }
+
+  // 装备与天赋统一折算为战斗/经济修正，玩家实体与测试共用
+  function buildModifiers (upgrades) {
+    upgrades = upgrades || {}
+    var equipment = upgrades.equipment || []
+    var talents = upgrades.talents || []
+    var mods = { damage: 1, fireRate: 1, incoming: 1, coin: 1, recruit: 1, hpBonus: 0 }
+    if (equipment.indexOf('blade') >= 0) mods.damage *= 1.2
+    if (equipment.indexOf('armor') >= 0) mods.hpBonus += 1
+    if (equipment.indexOf('bag') >= 0) mods.recruit *= 1.2
+    if (talents.indexOf('rapid') >= 0) mods.fireRate *= 1.2
+    if (talents.indexOf('ironwall') >= 0) mods.incoming *= 0.85
+    if (talents.indexOf('berserk') >= 0) mods.damage *= 1.15
+    if (talents.indexOf('medic') >= 0) mods.hpBonus += 2
+    if (talents.indexOf('lucky') >= 0) mods.coin *= 1.5
+    if (talents.indexOf('recruiter') >= 0) mods.recruit *= 1.25
+    return mods
+  }
+
+  /**
+   * 单个战斗帧。第七个参数为可选修正：兵种、装备、天赋与敌方技能攻速。
+   * 我方输出与敌方近战伤害仍完全独立，提高攻击不会反噬自身。
+   */
+  function battleStep (army, enemyHp, dt, melee, attackLevel, cfg, mods) {
+    cfg = cfg || CFG
+    mods = mods || {}
+    var count = Math.max(0, army.count)
+    var outgoingCounter = unitCounter(mods.playerType, mods.enemyType, cfg)
+    var damage = Math.min(enemyHp,
+      count * cfg.fireRatePerUnit * (mods.fireRate || 1) * attackMultiplier(attackLevel, cfg) *
+      (mods.damage || 1) * outgoingCounter * dt)
+    var taken = 0
+    if (melee && count > 0 && enemyHp > 0) {
+      var engagedPairs = Math.min(count, enemyHp)
+      var incomingCounter = unitCounter(mods.enemyType, mods.playerType, cfg)
+      taken = Math.min(armyHp(army), engagedPairs * cfg.enemyMeleeRatePerUnit *
+        (mods.enemyRate || 1) * (mods.incoming || 1) * incomingCounter * dt)
+      damageArmy(army, taken)
     }
-    return arr
+    return { damage: damage, taken: taken }
   }
 
-  function buildLevel (level, scale) {
-    var random = rng(1000 + level * 137)
-    var lv = level + 1
-    var z = 0
-    var objects = []
-    var path = [{ count: C.startCount, z: 0, label: '起点' }]
-    var n = C.startCount
-    var bigValueSum = 0
-    var smallValueSum = 0
-    var bigCount = 0
-
-    function advance (dz) {
-      z += dz
-      // 按右侧高值兵牌估算最优路线兵力（生成器只做难度标定；实战仍需手动收兵）
-      var startZ = z - dz
-      var gained = 0
-      for (var pz = C.pickupFirstZ; pz < z; pz += C.pickupSpacing) {
-        if (pz > startZ) {
-          var idx = Math.round((pz - C.pickupFirstZ) / C.pickupSpacing)
-          var value = C.rightBigValues[(idx + level) % C.rightBigValues.length]
-          gained += value
-          bigValueSum += value
-          smallValueSum += C.leftValue
-          bigCount++
+  // 离散仿真一个战斗节点，包含武将横扫、狂暴与Boss阶段技
+  function simulateBattle (startCount, enemyHp, options) {
+    options = options || {}
+    var cfg = options.config || CFG
+    var hpPerUnit = Math.max(1, options.hpPerUnit || 1)
+    var army = { count: startCount, hpPerUnit: hpPerUnit, hp: options.startHp == null ? startCount * hpPerUnit : options.startHp }
+    var attackLevel = options.attackLevel || 0
+    var distance = cfg.engageRange
+    var melee = false
+    var hp = enemyHp
+    var maxHp = Math.max(1, options.maxHp || enemyHp)
+    var phase = 1
+    var skillClock = 0
+    var dt = 1 / 120
+    var steps = 0
+    var baseMods = options.modifiers || buildModifiers(options.upgrades)
+    while (hp > 0 && army.hp > 0 && steps < 60000) {
+      if (!melee) {
+        distance -= cfg.enemyChargeSpeed * dt
+        if (distance <= 0) melee = true
+      }
+      var enemyRate = 1
+      if (options.skill === 'rage' && hp <= maxHp * 0.5) enemyRate *= 1.5
+      if (options.boss) enemyRate *= cfg.bossPhaseRate[phase - 1]
+      var mods = {
+        playerType: options.playerType || 'shield', enemyType: options.enemyType || 'shield',
+        damage: baseMods.damage, fireRate: baseMods.fireRate, incoming: baseMods.incoming,
+        enemyRate: enemyRate
+      }
+      var result = battleStep(army, hp, dt, melee, attackLevel, cfg, mods)
+      hp = Math.max(0, hp - result.damage)
+      if (options.boss && hp > 0) {
+        var targetPhase = hp <= maxHp * 0.33 ? 3 : (hp <= maxHp * 0.66 ? 2 : 1)
+        while (phase < targetPhase && army.hp > 0) {
+          phase++
+          damageArmy(army, Math.max(1, armyHp(army) * cfg.bossPhaseSkillRatio))
         }
       }
-      n += gained
-      path.push({ count: n, z: Math.round(z), label: '收兵后', gained: gained })
+      if (options.skill === 'sweep' && hp > 0 && army.hp > 0) {
+        skillClock += dt
+        if (skillClock >= cfg.generalSkillInterval) {
+          skillClock -= cfg.generalSkillInterval
+          damageArmy(army, Math.max(1, armyHp(army) * cfg.generalSkillHpRatio))
+        }
+      }
+      steps++
+    }
+    return { won: hp <= 0 && army.hp > 0, count: army.count, hp: army.hp,
+      lost: startCount - army.count, enemyHp: hp, steps: steps, phase: phase }
+  }
+
+  function battleLoss (player, hp, options) { return simulateBattle(player, hp, options).lost }
+
+  function formationOffsets (drawN, gapX, gapZ) {
+    var out = []
+    if (drawN <= 0) return out
+    var cols = Math.round(clamp(Math.sqrt(drawN) * 1.2, 4, 12))
+    var rows = Math.ceil(drawN / cols)
+    var n = 0
+    for (var r = 0; r < rows && n < drawN; r++) {
+      var inThisRow = Math.min(cols, drawN - n)
+      var rowWidth = (inThisRow - 1) * gapX
+      var dz = (rows - 1 - r) * gapZ
+      for (var c = 0; c < inThisRow; c++) {
+        out.push({ dx: -rowWidth / 2 + c * gapX, dz: dz })
+        n++
+      }
+    }
+    return out
+  }
+
+  function nodeTemplate () {
+    return [
+      { type: 'wave', z: 1500, factor: 1.10 },
+      { type: 'general', z: 2350, hpFactor: 1.20, skill: 'sweep' },
+      { type: 'wave', z: 3050, factor: 1.15 },
+      { type: 'general', z: 3800, hpFactor: 1.35, boss: true, skill: 'rage' }
+    ]
+  }
+
+  function makeSupportItems (levelIndex, rng) {
+    var gates = [
+      { type: 'gate', z: 950, left: { op: '*', value: CFG.gateMultiplier, label: '×' + CFG.gateMultiplier },
+        right: { op: '+', value: CFG.gateAddition, label: '+' + CFG.gateAddition }, _done: false },
+      { type: 'gate', z: 2700, left: { op: '*', value: CFG.gateMultiplier, label: '×' + CFG.gateMultiplier },
+        right: { op: '+', value: CFG.gateAddition, label: '+' + CFG.gateAddition }, _done: false }
+    ]
+    var troopGates = [
+      { type: 'troopGate', z: 1200, left: 'shield', right: 'archer', _done: false },
+      { type: 'troopGate', z: 3250, left: 'cavalry', right: 'shield', _done: false }
+    ]
+    var kinds = ['cache', 'reinforce', 'ambush']
+    var events = [1850, 3420].map(function (z, i) {
+      var kind = kinds[Math.floor(rng() * kinds.length)]
+      return { type: 'event', z: z, side: (levelIndex + i) % 2 ? 'R' : 'L', eventKind: kind, _done: false }
+    })
+    return gates.concat(troopGates, events)
+  }
+
+  /** 生成一关并用“全收兵牌 + 更优门选项 + 更优兵种”验证一条可通路线。 */
+  function buildLevel (levelIndex, scale) {
+    var rng = mulberry32(20261106 + levelIndex * 9973)
+    var start = CFG.startCount + Math.min(levelIndex, 6) * 3
+    var castleZ = 4350
+    var pickups = []
+    var z = CFG.pickupFirstZ
+    var idx = 0
+    while (z < castleZ - 280) {
+      var isRight = idx % 4 === 3
+      var value = isRight ? CFG.rightBigValues[idx % CFG.rightBigValues.length] : CFG.leftValue
+      pickups.push({ type: 'pickup', z: Math.round(z), side: isRight ? 'R' : 'L',
+        op: '+', value: value, label: '+' + value, _done: false })
+      z += CFG.pickupSpacing
+      idx++
     }
 
-    function wave (size) {
-      var hp = Math.round(size * scale)
-      objects.push({ type: 'wave', z: Math.round(z), size: size, hp: hp, maxHp: hp })
-      path.push({ count: n, z: Math.round(z), label: '兵潮×' + size })
+    var support = makeSupportItems(levelIndex, rng).concat(pickups).sort(function (a, b) { return a.z - b.z })
+    var diff = clamp(1 + levelIndex * 0.05, 1, 1.3) * scale
+    var nodes = nodeTemplate()
+    var simArmy = { count: start, hpPerUnit: 1, hp: start }
+    var simType = 'shield'
+    var si = 0
+    var solvable = true
+    var unitCycle = ['cavalry', 'shield', 'archer', 'cavalry']
+
+    for (var ni = 0; ni < nodes.length; ni++) {
+      var nd = nodes[ni]
+      nd.unitType = unitCycle[(levelIndex + ni) % unitCycle.length]
+      while (si < support.length && support[si].z <= nd.z - CFG.engageRange) {
+        var sp = support[si]
+        if (sp.type === 'pickup') addArmyUnits(simArmy, sp.value)
+        else if (sp.type === 'gate') {
+          var leftCount = applyGate(simArmy.count, sp.left)
+          var rightCount = applyGate(simArmy.count, sp.right)
+          applyArmyGate(simArmy, leftCount >= rightCount ? sp.left : sp.right)
+        } else if (sp.type === 'troopGate') {
+          var leftScore = unitCounter(sp.left, nd.unitType)
+          var rightScore = unitCounter(sp.right, nd.unitType)
+          var stayScore = unitCounter(simType, nd.unitType)
+          if (leftScore >= rightScore && leftScore >= stayScore) simType = sp.left
+          else if (rightScore >= stayScore) simType = sp.right
+        }
+        si++
+      }
+      var hp
+      if (nd.type === 'wave') {
+        nd.count = Math.max(4, Math.round(simArmy.count * nd.factor * diff))
+        nd.centerRatio = 0.5
+        nd.widthRatio = CFG.waveColsRatio
+        hp = nd.count
+      } else {
+        nd.hp = Math.max(20, Math.round(simArmy.count * nd.hpFactor * diff))
+        nd.maxHp = nd.hp
+        nd.centerRatio = 0.5
+        nd.widthRatio = 0.5
+        hp = nd.hp
+      }
+      var result = simulateBattle(simArmy.count, hp, {
+        startHp: simArmy.hp, playerType: simType, enemyType: nd.unitType,
+        skill: nd.skill, boss: nd.boss, maxHp: nd.maxHp || hp
+      })
+      simArmy = { count: result.count, hpPerUnit: 1, hp: result.hp }
+      if (!result.won || simArmy.count <= 0) { solvable = false; break }
     }
 
-    function general (size, boss) {
-      var hp = Math.round(size * scale * 1.15)
-      objects.push({ type: 'general', z: Math.round(z), size: size, hp: hp, maxHp: hp, boss: !!boss })
-      path.push({ count: n, z: Math.round(z), label: boss ? '最终Boss×' + size : '武将×' + size })
-    }
-
-    advance(1500 + random() * 350)
-    wave(13 + lv * 3 + Math.floor(n * 0.1))
-    advance(1050 + random() * 300)
-    general(24 + lv * 4 + Math.floor(n * 0.18), false)
-    advance(1400 + random() * 400)
-    wave(22 + lv * 4 + Math.floor(n * 0.16))
-    advance(1100 + random() * 300)
-    // 最后一名武将就是最终Boss：死亡当帧直接通关
-    general(40 + lv * 6 + Math.floor(n * 0.32), true)
-    advance(760)
-    objects.push({ type: 'castle', z: Math.round(z) })
-
+    var items = support.concat(nodes)
+    items.push({ type: 'castle', z: castleZ })
+    items.sort(function (a, b) { return a.z - b.z })
     return {
-      levelIndex: level,
-      length: Math.round(z),
-      objects: objects,
-      pickups: makePickups(level, z - 500, random),
-      path: path,
-      start: C.startCount,
-      scale: scale,
-      stats: { bigValueSum: bigValueSum, smallValueSum: smallValueSum, bigCount: bigCount }
+      level: levelIndex, start: start, length: castleZ, items: items,
+      mode: Content.modeForLevel(levelIndex).id,
+      timeLimit: CFG.modeTimeLimit,
+      bestPossible: Math.round(simArmy.count), solvable: solvable
     }
   }
 
-  function countPickupsBefore (pickups, z, side) {
-    var sum = 0
-    for (var i = 0; i < pickups.length; i++) {
-      var p = pickups[i]
-      if (p.z < z && p.side === side) sum += p.value
+  function generateLevel (levelIndex) {
+    var scale = 1
+    var data = buildLevel(levelIndex, scale)
+    var tries = 0
+    while (!data.solvable && tries < 8) {
+      scale *= 0.8
+      data = buildLevel(levelIndex, scale)
+      tries++
     }
-    return sum
+    return data
   }
 
-  // 与实战 Level.update 共用 battleStep，保证“可解性仿真”不会与真实伤害口径漂移
-  function simulateCombat (armyHp, hpPerUnit, damage, obj) {
-    var st = {
-      playerHp: armyHp,
-      playerMaxHpPerUnit: hpPerUnit,
-      playerDamage: damage,
-      enemyHp: obj.hp,
-      enemyMaxHp: obj.maxHp,
-      enemyUnits: obj.size
+  // 随机事件结果在生成时确定，收集时只结算一次
+  function resolveEvent (item, army) {
+    var kind = item.eventKind
+    if (kind === 'cache') return { coins: 40, units: 0, text: '+40金币' }
+    if (kind === 'reinforce') {
+      var mods = buildModifiers(army)
+      var units = Math.round(12 * (army.recruitMultiplier || mods.recruit || 1))
+      addArmyUnits(army, units)
+      return { coins: 0, units: units, text: '+' + units + '援军' }
     }
-    var chargeTime = Math.max(0, (C.engageRange - C.contactRange) / C.enemyChargeSpeed)
-    var elapsed = 0
-    var dt = 1 / 120
-    var opts = {
-      meleeCap: obj.type === 'general' ? 34 : 18,
-      unitType: 'shield',
-      enemyType: obj.unitType || 'shield'
-    }
-    // 敌军先冲锋，我方远程无损输出；进入近战后才按接敌对数受伤
-    while (elapsed < chargeTime && !st.won) {
-      battleStep(st, Math.min(dt, chargeTime - elapsed), opts)
-      elapsed += dt
-    }
-    var guard = 0
-    while (!st.won && !st.dead && guard < 120 * 180) {
-      battleStep(st, dt, opts)
-      guard++
-    }
-    return st
+    var damage = Math.min(armyHp(army), 6 * (army.hpPerUnit || 1))
+    damageArmy(army, damage)
+    return { coins: 60, units: 0, damage: damage, text: '夺金60 · 遭伏击' }
   }
 
-  // 满吃高值兵牌的“可解性”检查；若失败则下调整关难度后重新生成
-  function verifyLevel (data) {
-    var hpPerUnit = 1
-    var damage = 1
-    var army = C.startCount * hpPerUnit
-    var results = []
-    for (var i = 0; i < data.objects.length; i++) {
-      var obj = data.objects[i]
-      if (obj.type === 'castle') continue
-      army += countPickupsBefore(data.pickups, obj.z, 'R') * hpPerUnit
-      var st = simulateCombat(army, hpPerUnit, damage, obj)
-      results.push({ z: obj.z, type: obj.type, remainHp: st.playerHp, remainCount: st.playerCount, won: st.won })
-      if (!st.won || st.playerHp <= 0) return { ok: false, results: results }
-      army = st.playerHp
+  // 每次三选一无放回；已拥有天赋不进入候选，全部学完后允许直接下一关
+  function talentChoices (levelIndex, owned) {
+    owned = owned || []
+    var pool = Content.talents.filter(function (t) { return owned.indexOf(t.id) < 0 })
+    var rng = mulberry32(92021 + levelIndex * 7919 + owned.length * 101)
+    for (var i = pool.length - 1; i > 0; i--) {
+      var j = Math.floor(rng() * (i + 1))
+      var tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp
     }
-    return { ok: true, results: results, remainHp: army, remainCount: hpToCount(army, hpPerUnit) }
+    return pool.slice(0, 3)
   }
 
-  function generateLevel (level) {
-    // 难度随关卡上升，但始终保证“满吃路线”能通关
-    var scale = 0.36 + level * 0.05
-    for (var attempt = 0; attempt < 40; attempt++) {
-      var data = buildLevel(level, scale)
-      data.mode = CONTENT.modes[level % CONTENT.modes.length].id
-      var gates = []
-      var combatObjects = data.objects.filter(function (o) { return o.type === 'wave' || o.type === 'general' })
-      for (var i = 0; i < combatObjects.length; i++) {
-        var obj = combatObjects[i]
-        obj.unitType = CONTENT.modes.length ? ['shield', 'archer', 'cavalry'][(level + i + 1) % 3] : 'shield'
-        if (obj.type === 'general') obj.skillClock = 0
-        if (obj.boss) obj.phase = 1
-        var before = obj.z - 260
-        gates.push({ type: 'armyGate', z: Math.max(250, before - 320), left: C.armyGateSides[0], right: C.armyGateSides[1] })
-        gates.push({
-          type: 'unitGate', z: Math.max(420, before - 120),
-          left: C.unitGateTypes[(level + i) % 3],
-          right: C.unitGateTypes[(level + i + 1) % 3]
-        })
-      }
-      for (var e = 0; e < 2; e++) {
-        gates.push({ type: 'event', z: 950 + e * 1750 + (level % 3) * 90, event: randomEvent(level, e) })
-      }
-      data.objects = data.objects.concat(gates).sort(function (a, b) { return a.z - b.z })
-      var check = verifyLevel(data)
-      if (check.ok) {
-        data.verification = check
-        return data
-      }
-      scale *= 0.85
-    }
-    // 极端保底：始终返回可玩的布局
-    var fallback = buildLevel(level, 0.1)
-    fallback.mode = CONTENT.modes[level % CONTENT.modes.length].id
-    fallback.verification = verifyLevel(fallback)
-    return fallback
+  function equipmentOffers (owned) {
+    owned = owned || []
+    return Content.equipment.filter(function (e) { return owned.indexOf(e.id) < 0 }).slice(0, 2)
   }
 
   CR.Logic = {
-    battleStep: battleStep,
-    formation: formation,
-    rng: rng,
-    hpToCount: hpToCount,
-    applyArmyGate: applyArmyGate,
-    buildModifiers: buildModifiers,
-    talentChoices: talentChoices,
-    randomEvent: randomEvent,
-    simulateCombat: simulateCombat,
-    generateLevel: generateLevel,
-    verifyLevel: verifyLevel
+    clamp: clamp, mulberry32: mulberry32, randRange: randRange, pick: pick,
+    applyGate: applyGate, gateLabel: gateLabel, applyArmyGate: applyArmyGate,
+    attackMultiplier: attackMultiplier, armyHp: armyHp, addArmyUnits: addArmyUnits, damageArmy: damageArmy,
+    unitCounter: unitCounter, buildModifiers: buildModifiers, battleStep: battleStep,
+    simulateBattle: simulateBattle, battleLoss: battleLoss, formationOffsets: formationOffsets,
+    buildLevel: buildLevel, generateLevel: generateLevel, resolveEvent: resolveEvent,
+    talentChoices: talentChoices, equipmentOffers: equipmentOffers
   }
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = CR.Logic
 })(typeof GameGlobal !== 'undefined' ? GameGlobal : (typeof window !== 'undefined' ? window : globalThis))
