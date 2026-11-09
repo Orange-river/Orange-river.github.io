@@ -30,13 +30,17 @@
     leftValue: 1,             // 左侧蓝色兵牌：稳定 +1
     rightBigValues: [10, 15, 20, 30], // 右侧黄色兵牌：高值补给
 
-    // 战斗：远程射击（带弹道）+ 近身 1:1 抵消
+    // 战斗：我方远程射击与敌方近战伤害独立计算
     engageRange: 380,         // 敌军进入玩家线前多少纵深即驻足交战
     fireRatePerUnit: 0.6,     // 每个我方小兵每秒发射的子弹数（远程阶段无损杀伤）
     enemyChargeSpeed: 240,    // 敌兵向玩家阵线冲锋的速度（逻辑像素/秒）
-    meleeExchange: 1,         // 近身抵消：每造成1点伤害我方损失1兵（严格1:1）
+    enemyMeleeRatePerUnit: 0.8, // 每个实际接敌敌兵每秒造成的伤害，受双方接敌对数限制
     bulletSpeed: 1000,        // 子弹飞行速度（屏幕像素/秒，纯视觉）
-    boneFxPerKill: 0.9,       // 每消灭多少敌兵生成一块碎骨特效（节流控性能）
+    boneFxPerKill: 0.9,       // 每点射击伤害生成多少碎骨特效（节流控性能）
+
+    // 局间成长：每关通关后免费二选一，并立即带入下一关
+    attackDamagePerUpgrade: 0.25, // 每级攻击 +25% 单发子弹伤害
+    hpPerVitalityUpgrade: 1,      // 每级体质让每名小兵 +1 生命
 
     // 人群
     startCount: 18,          // 初始兵力

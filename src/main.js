@@ -24,6 +24,8 @@
     this.fx = new CR.Entities.Fx()
     this.level = new CR.Level(this.w, this.h)
     this.player = null
+    this.attackLevel = 0
+    this.vitalityLevel = 0
     this.state = S.MENU
     this.lastTs = 0
     this.calibrated = false
@@ -89,7 +91,8 @@
       return
     }
     if (this.state === S.WIN) {
-      if (inRect(p, this.renderer.buttonRect(0.66))) this.startLevel(this.level.levelIndex + 1)
+      if (inRect(p, this.renderer.upgradeRect('attack'))) this.chooseUpgrade('attack')
+      else if (inRect(p, this.renderer.upgradeRect('vitality'))) this.chooseUpgrade('vitality')
       return
     }
     if (this.state === S.LOSE) {
@@ -98,10 +101,26 @@
   }
 
   Main.prototype.startLevel = function (idx) {
+    // 从主菜单开始新一局时清零成长；重试当前关保留此前已选升级
+    if (this.state === S.MENU && idx === 0) {
+      this.attackLevel = 0
+      this.vitalityLevel = 0
+    }
     var data = this.level.load(idx)
-    this.player = new CR.Entities.Player(this.w, this.h, data.start)
+    this.player = new CR.Entities.Player(this.w, this.h, data.start, {
+      attackLevel: this.attackLevel,
+      vitalityLevel: this.vitalityLevel
+    })
     this.fx.clear()
     this.state = S.PLAYING
+  }
+
+  Main.prototype.chooseUpgrade = function (kind) {
+    if (this.state !== S.WIN) return
+    if (kind === 'attack') this.attackLevel++
+    else if (kind === 'vitality') this.vitalityLevel++
+    else return
+    this.startLevel(this.level.levelIndex + 1)
   }
 
   // 持续交战：从我方阵线向敌人发射可见弹道子弹，子弹命中时才爆出碎骨
@@ -136,7 +155,7 @@
         this.fx.addFloat('武将击破', this.player.x, this.level.groundY - 120, C.color.gold, true)
       } else if (e.type === 'lose') {
         this.state = S.LOSE
-      } else if (e.type === 'castle') {
+      } else if (e.type === 'levelComplete') {
         this.state = S.WIN
       }
     }
@@ -160,9 +179,9 @@
       r.background(0)
       r.panel()
       r.title('倍增兵团', this.h * 0.25, 0.125, C.color.gold)
-      r.line('左右拖动，贴边收编蓝黄兵牌', this.h * 0.38, 0.042)
-      r.line('带兵群殴红袍武将，人多才能通关！', this.h * 0.435, 0.042)
-      r.line('纯广告变现·无需版号的休闲小游戏原型', this.h * 0.5, 0.034, '#cfd6cf')
+      r.line('左右拖动收编兵牌，末将阵亡即通关', this.h * 0.38, 0.042)
+      r.line('每关免费强化攻击或士兵体质', this.h * 0.435, 0.042)
+      r.line('远程射击无损，近战伤亡由敌军攻速决定', this.h * 0.5, 0.032, '#cfd6cf')
       r.button(r.buttonRect(0.66), '开始游戏')
       return
     }
@@ -171,10 +190,12 @@
 
     if (this.state === S.WIN) {
       r.panel()
-      r.title('通关！', this.h * 0.3, 0.11, C.color.gold)
-      r.line('剩余兵力：' + Math.round(this.player.count), this.h * 0.41, 0.05)
-      r.line('第 ' + (this.level.levelIndex + 1) + ' 关完成', this.h * 0.47, 0.042, '#cfd6cf')
-      r.button(r.buttonRect(0.66), '下一关')
+      r.title('Boss击破！', this.h * 0.26, 0.105, C.color.gold)
+      r.line('剩余兵力：' + Math.round(this.player.count), this.h * 0.36, 0.05)
+      r.line('免费选一项强化，立即进入下一关', this.h * 0.45, 0.038, '#e9eee9')
+      r.line('当前：攻击Lv.' + this.attackLevel + ' · 体质Lv.' + this.vitalityLevel, this.h * 0.5, 0.035, '#cfd6cf')
+      r.upgradeButton(r.upgradeRect('attack'), '攻击强化', '子弹伤害 +25%', '#d89a22', '#a66c12')
+      r.upgradeButton(r.upgradeRect('vitality'), '体质强化', '每兵生命 +1', '#258fda', '#1769a8')
     } else if (this.state === S.LOSE) {
       r.panel()
       r.title('兵力打光了', this.h * 0.3, 0.1, '#ff8a8d')

@@ -7,17 +7,32 @@
   var C = CR.CONFIG
   var clamp = CR.Logic.clamp
 
-  // 玩家人群
-  function Player (w, h, startCount) {
+  // 玩家人群：人数为整数，总生命独立计算；体质升级增加每兵生命
+  function Player (w, h, startCount, upgrades) {
+    upgrades = upgrades || {}
     this.w = w
     this.h = h
+    this.attackLevel = upgrades.attackLevel || 0
+    this.vitalityLevel = upgrades.vitalityLevel || 0
+    this.hpPerUnit = 1 + this.vitalityLevel * C.hpPerVitalityUpgrade
     this.count = startCount
+    this.hp = startCount * this.hpPerUnit
     this.x = w / 2
     this.targetX = w / 2
     this.phase = 0          // 行走摆动相位
     this.pulse = 0          // 收编/变强时的鼓胀脉冲（0~1）
     this.trackLeft = w * C.trackMarginRatio
     this.trackRight = w * (1 - C.trackMarginRatio)
+  }
+
+  Player.prototype.addUnits = function (value) {
+    this.count += value
+    this.hp += value * this.hpPerUnit
+  }
+
+  Player.prototype.takeDamage = function (amount) {
+    this.hp = Math.max(0, this.hp - amount)
+    this.count = this.hp <= 0 ? 0 : Math.ceil(this.hp / this.hpPerUnit - 1e-9)
   }
 
   Player.prototype.resize = function (w, h) {

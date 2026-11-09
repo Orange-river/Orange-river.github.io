@@ -1,7 +1,7 @@
 /**
  * 运行时关卡：推进镜头、兵牌收编、红兵潮/武将持续群殴、胜负判定。
  * 世界坐标 z 沿跑道向远处增大；透视投影把 z 映射到屏幕（近大远小）形成 2.5D。
- * 战斗数值与 logic.js 的可解性仿真共用 waveStep/generalStep，保证实战与仿真同源。
+ * 战斗数值与 logic.js 的可解性仿真共用 battleStep，保证实战与仿真同源。
  */
 (function (global) {
   var CR = (global.CR = global.CR || {})
@@ -12,6 +12,7 @@
     this.data = null
     this.levelIndex = 0
     this.traveled = 0
+    this.completed = false
     this.speed = C.baseSpeed
     this.setMetrics(w, h)
   }
@@ -30,6 +31,7 @@
     this.levelIndex = levelIndex
     this.data = L.generateLevel(levelIndex)
     this.traveled = 0
+    this.completed = false
     this.speed = Math.min(C.maxSpeed, C.baseSpeed + levelIndex * C.speedGrowthPerLevel)
     for (var i = 0; i < this.data.items.length; i++) {
       var it = this.data.items[i]
@@ -53,7 +55,7 @@
     var dz = z - this.traveled
     var d = Math.max(0, dz)
     var s = C.perspectiveK / (C.perspectiveK + d)
-    return { dz: dz, s: s, sy: this.horizonY + (this.groundY - this.horizonY) * s }
+    return { dz: dz, s: s, sy: this.horizonY + (this.groundY - horizonY) * s }
   }
 
   Level.prototype.projX = function (x, s) { return this.w / 2 + (x - this.w / 2) * s }
@@ -108,7 +110,7 @@
    */
   Level.prototype.update = function (dt, player) {
     var events = []
-    // 有敌人进入交战纵深即驻足群殴（远程射击+敌冲锋+近身1:1），打光再继续前进
+    // 有敌人进入交战纵深即驻足群殴（远程射击+敌冲锋+独立近战伤害），打光再继续前进
     var fighting = false
     for (var fi = 0; fi < this.data.items.length; fi++) {
       var fe = this.data.items[fi]
@@ -133,7 +135,7 @@
         if (d <= C.pickupCollectDz) {
           var onSide = it.side === 'L' ? ratio <= C.pickupSideRatio : ratio >= (1 - C.pickupSideRatio)
           if (onSide) {
-            player.count += it.value
+            L.addArmyUnits(player, it.value)
             it._done = true
             var ax = self.pickupAnchorX(it)
             events.push({ type: 'pickup', item: it, value: it.value, x: self.projX(ax, it._proj.s), y: it._proj.sy })
@@ -144,26 +146,32 @@
 
       if (it._done || it._dead) return
 
-      // 持续群殴：进入交战纵深即驻足开打；我方远程射击（带弹道），敌人冲到阵线后 1:1 抵消
+      // 持续群殴：我方远程射击与敌方近战伤害独立计算
       if ((it.type === 'wave' || it.type === 'general') && !it._dead) {
         if (!it._engaged && d <= C.engageRange && d > -400) it._engaged = true
         if (it._engaged) {
-          // 敌兵向阵线冲锋（近身前持续推进），同时横向拐弯逼近我方队伍，躲不开
+          // 敌兵向阵线冲锋并横向拐弯逼近我方，躲不开
           if (!it._melee) it._adv += C.enemyChargeSpeed * dt
           var pratio = self.playerRatio(player)
           it.centerRatio += (pratio - it.centerRatio) * Math.min(1, 3 * dt)
-          // 我方持续射击：每发子弹消灭 1 点敌血（远程阶段我方无损）
-          var shots = Math.min(it._hp, player.count * C.fireRatePerUnit * dt)
-          it._hp = Math.max(0, it._hp - shots)
-          it._fxKills = shots
-          // 敌人冲到阵线进入近身 1:1 抵消：每造成 1 点伤害我方损失 1 兵
           if (d <= 0) it._melee = true
-          if (it._melee) player.count = Math.max(0, player.count - shots * C.meleeExchange)
+          var combat = L.battleStep(player, it._hp, dt, it._melee, player.attackLevel || 0)
+          it._hp = Math.max(0, it._hp - combat.damage)
+          it._fxKills = combat.damage
+          it._enemyDamage = combat.taken
           if (it._hp <= 0) {
             it._dead = true
             var eb = self.enemyBounds(it)
-            if (it.type === 'wave') events.push({ type: 'waveClear', item: it, x: self.projX(eb.cx, it._proj.s), y: it._proj.sy })
-            else events.push({ type: 'generalDown', item: it, x: self.projX(eb.cx, it._proj.s), y: it._proj.sy })
+            if (it.type === 'wave') {
+              events.push({ type: 'waveClear', item: it, x: self.projX(eb.cx, it._proj.s), y: it._proj.sy })
+            } else {
+              events.push({ type: 'generalDown', item: it, x: self.projX(eb.cx, it._proj.s), y: it._proj.sy })
+              // 最终 Boss 死亡就是本关终点，不再要求玩家空走到城堡
+              if (it.boss && !self.completed) {
+                self.completed = true
+                events.push({ type: 'levelComplete', item: it })
+              }
+            }
           }
         }
       }
@@ -174,7 +182,7 @@
       }
     })
 
-    if (player.count < 0.5) { player.count = 0; events.push({ type: 'lose' }) }
+    if (L.armyHp(player) <= 0 && !this.completed) { player.count = 0; events.push({ type: 'lose' }) }
     return events
   }
 
