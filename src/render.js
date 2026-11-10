@@ -32,17 +32,18 @@
     ctx.restore()
   }
 
-  function strokeText (ctx, text, x, y, font, fill, align) {
+  function strokeText (ctx, text, x, y, font, fill, width, align) {
     ctx.font = font
     ctx.textAlign = align || 'center'
     ctx.textBaseline = 'middle'
-    ctx.lineWidth = 5
+    var tw = ctx.measureText(text).width
+    var tx = Math.max(tw / 2 + 6, Math.min(width - tw / 2 - 6, x))
+    // 描边随字号缩放，避免小字被粗黑边糊住；描边与填字使用同一钳制坐标
+    ctx.lineWidth = Math.max(2, Math.min(5, parseFloat(ctx.font) * 0.18))
     ctx.lineJoin = 'round'
     ctx.strokeStyle = C.color.hudShadow
-    ctx.strokeText(text, x, y)
+    ctx.strokeText(text, tx, y)
     ctx.fillStyle = fill
-    var tw = ctx.measureText(text).width
-    var tx = Math.max(tw / 2 + 6, Math.min(this.w - tw / 2 - 6, x))
     ctx.fillText(text, tx, y)
   }
 
@@ -306,7 +307,7 @@
       var top = units[0]
       for (var i = 1; i < units.length; i++) if (units[i].y < top.y) top = units[i]
       strokeText(this.ctx, String(Math.round(player.count)), player.x, Math.max(46, top.y - top.r * 3.2),
-        'bold ' + Math.round(this.w * 0.085) + 'px Arial', C.color.hudText)
+        'bold ' + Math.round(this.w * 0.085) + 'px Arial', C.color.hudText, this.w)
     }
   }
 
@@ -341,9 +342,9 @@
       for (var u = 1; u < units.length; u++) if (units[u].y < topY) topY = units[u].y
       var fs = Math.max(13, Math.round(w * 0.08 * s))
       strokeText(ctx, String(alive), level.projX(b.cx, s), Math.max(38, topY - w * 0.05 * s),
-        'bold ' + fs + 'px Arial', '#ffe3e3')
+        'bold ' + fs + 'px Arial', '#ffe3e3', w)
       strokeText(ctx, Content.unit(item.unitType).name, level.projX(b.cx, s), Math.max(24, topY - w * 0.10 * s),
-        'bold ' + Math.max(9, Math.round(fs * 0.48)) + 'px Arial', Content.unit(item.unitType).color)
+        'bold ' + Math.max(9, Math.round(fs * 0.48)) + 'px Arial', Content.unit(item.unitType).color, w)
     }
   }
 
@@ -380,7 +381,7 @@
     ctx.fill()
     // 文案
     ctx.fillStyle = isGold ? C.color.plaqueTextDark : '#ffffff'
-    ctx.font = 'bold ' + Math.max(8, Math.round(w * 0.045 * s)) + 'px Arial'
+    ctx.font = 'bold ' + Math.max(11, Math.round(w * 0.056 * s)) + 'px Arial'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(item.label, cx - 1 * s, top + ph * 0.58)
@@ -403,7 +404,7 @@
       ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = Math.max(1, 3 * s)
       roundRect(ctx, x, y, pw, ph, 8 * s); ctx.stroke()
       strokeText(ctx, option.label, cx, y + ph * 0.54,
-        'bold ' + Math.max(10, Math.round(w * 0.09 * s)) + 'px Arial', '#ffffff')
+        'bold ' + Math.max(14, Math.round(w * 0.11 * s)) + 'px Arial', '#ffffff', w)
     }
   }
 
@@ -421,7 +422,7 @@
       ctx.strokeStyle = '#ffffff'; ctx.lineWidth = Math.max(1, 2 * s)
       roundRect(ctx, x, y, pw, ph, 8 * s); ctx.stroke()
       strokeText(ctx, Content.unit(type).name, cx, y + ph * 0.54,
-        'bold ' + Math.max(9, Math.round(w * 0.052 * s)) + 'px Arial', '#ffffff')
+        'bold ' + Math.max(12, Math.round(w * 0.075 * s)) + 'px Arial', '#ffffff', w)
     }
   }
 
@@ -436,11 +437,10 @@
     roundRect(ctx, x, y, pw, ph, 10 * s); ctx.fill()
     ctx.strokeStyle = '#ffe5a0'; ctx.lineWidth = Math.max(1, 3 * s)
     roundRect(ctx, x, y, pw, ph, 10 * s); ctx.stroke()
-    strokeText(ctx, def.label, cx, y + ph * 0.42,
-      'bold ' + Math.max(9, Math.round(w * 0.05 * s)) + 'px Arial', '#ffffff')
-    ctx.fillStyle = '#fff4c8'; ctx.font = Math.max(7, Math.round(w * 0.025 * s)) + 'px Arial'
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-    ctx.fillText(def.detail, cx, y + ph * 0.76)
+    strokeText(ctx, def.label, cx, y + ph * 0.36,
+      'bold ' + Math.max(12, Math.round(w * 0.07 * s)) + 'px Arial', '#ffffff', w)
+    strokeText(ctx, def.detail, cx, y + ph * 0.76,
+      'bold ' + Math.max(10, Math.round(w * 0.038 * s)) + 'px Arial', '#fff4c8', w)
   }
 
   Renderer.prototype.escort = function (level) {
@@ -456,7 +456,7 @@
     ctx.beginPath(); ctx.arc(cx + cw * 0.3, y, cw * 0.13, 0, Math.PI * 2); ctx.fill()
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; roundRect(ctx, cx - cw / 2, y - ch * 1.65, cw, 9, 4); ctx.fill()
     ctx.fillStyle = '#68dc8a'; roundRect(ctx, cx - cw / 2, y - ch * 1.65, cw * level.escortHp / C.escortMaxHp, 9, 4); ctx.fill()
-    strokeText(ctx, '粮车', cx, y - ch * 1.95, 'bold ' + Math.round(w * 0.035) + 'px Arial', '#ffffff')
+    strokeText(ctx, '粮车', cx, y - ch * 1.95, 'bold ' + Math.round(w * 0.035) + 'px Arial', '#ffffff', w)
   }
 
   // 红袍三国武将：宽袍 + 紫毛领 + 黑胡子 + 头盔 + 武器，头顶红血条数字
@@ -567,13 +567,13 @@
     roundRect(ctx, bxx, byy, bw * Math.max(0, hp / maxHp), bh, bh / 2)
     ctx.fill()
     strokeText(ctx, String(Math.max(0, Math.round(hp))), cx, byy - bh * 1.7,
-      'bold ' + Math.max(10, Math.round(w * 0.05 * s)) + 'px Arial', '#ffffff')
+      'bold ' + Math.max(10, Math.round(w * 0.05 * s)) + 'px Arial', '#ffffff', w)
     if (item.boss) {
       strokeText(ctx, '最终BOSS · P' + (item._phase || 1), cx, byy - bh * 3.5,
-        'bold ' + Math.max(10, Math.round(w * 0.045 * s)) + 'px Arial', C.color.gold)
+        'bold ' + Math.max(10, Math.round(w * 0.045 * s)) + 'px Arial', C.color.gold, w)
     } else if (item.skill === 'sweep') {
       strokeText(ctx, '横扫武将 · ' + Content.unit(item.unitType).name, cx, byy - bh * 3.5,
-        'bold ' + Math.max(9, Math.round(w * 0.034 * s)) + 'px Arial', '#ffd0a8')
+        'bold ' + Math.max(9, Math.round(w * 0.034 * s)) + 'px Arial', '#ffd0a8', w)
     }
   }
 
@@ -694,7 +694,7 @@
       var f = fx.floaters[i]
       ctx.globalAlpha = Math.max(0, f.life / f.maxLife)
       strokeText(ctx, f.text, f.x, f.y,
-        'bold ' + Math.round(this.w * (f.big ? 0.085 : 0.06)) + 'px Arial', f.color)
+        'bold ' + Math.round(this.w * (f.big ? 0.085 : 0.06)) + 'px Arial', f.color, this.w)
       ctx.globalAlpha = 1
     }
   }
@@ -702,24 +702,28 @@
   Renderer.prototype.hud = function (level, player, coins) {
     var ctx = this.ctx, w = this.w
     var mode = Content.modes.filter(function (m) { return m.id === level.mode })[0] || Content.modes[0]
-    ctx.fillStyle = 'rgba(0,0,0,0.32)'; roundRect(ctx, 12, 14, 96, 34, 17); ctx.fill()
-    ctx.fillStyle = '#fff'; ctx.font = 'bold ' + Math.round(w * 0.04) + 'px Arial'
+    ctx.fillStyle = 'rgba(0,0,0,0.52)'; roundRect(ctx, 12, 14, 96, 36, 18); ctx.fill()
+    ctx.fillStyle = '#fff'; ctx.font = 'bold ' + Math.round(w * 0.045) + 'px Arial'
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-    ctx.fillText('第 ' + (level.levelIndex + 1) + ' 关', 60, 31)
-    ctx.fillStyle = 'rgba(0,0,0,0.32)'; roundRect(ctx, w - 122, 14, 110, 34, 17); ctx.fill()
-    ctx.fillStyle = C.color.gold; ctx.fillText('金币 ' + (coins || 0), w - 67, 31)
+    ctx.fillText('第 ' + (level.levelIndex + 1) + ' 关', 60, 32)
+    ctx.fillStyle = 'rgba(0,0,0,0.52)'; roundRect(ctx, w - 122, 14, 110, 36, 18); ctx.fill()
+    ctx.fillStyle = C.color.gold; ctx.fillText('金币 ' + (coins || 0), w - 67, 32)
     if (player) {
-      ctx.fillStyle = 'rgba(0,0,0,0.32)'; roundRect(ctx, 12, 54, Math.min(w - 24, 330), 30, 15); ctx.fill()
-      ctx.fillStyle = Content.unit(player.unitType).color
-      ctx.font = 'bold ' + Math.round(w * 0.030) + 'px Arial'; ctx.textAlign = 'left'
-      ctx.fillText(Content.unit(player.unitType).name + ' · ' + mode.name + '  攻' + (player.attackLevel || 0) + ' 体' + (player.vitalityLevel || 0) + ' 每兵' + (player.hpPerUnit || 1) + '血', 23, 69)
+      // 关键属性拆成两行，避免小屏挤成一条无法辨认的小字
+      ctx.fillStyle = 'rgba(0,0,0,0.62)'; roundRect(ctx, 12, 56, Math.min(w - 24, 300), 36, 14); ctx.fill()
+      ctx.fillStyle = '#ffffff'
+      ctx.font = 'bold ' + Math.round(w * 0.043) + 'px Arial'; ctx.textAlign = 'left'
+      ctx.fillText(Content.unit(player.unitType).name + ' · ' + mode.name, 23, 74)
+      ctx.fillStyle = 'rgba(0,0,0,0.62)'; roundRect(ctx, 12, 96, Math.min(w - 24, 290), 34, 14); ctx.fill()
+      ctx.fillStyle = '#ffffff'; ctx.font = 'bold ' + Math.round(w * 0.038) + 'px Arial'
+      ctx.fillText('攻' + (player.attackLevel || 0) + ' · 体' + (player.vitalityLevel || 0) + ' · 每兵' + (player.hpPerUnit || 1) + '血', 23, 113)
       var objective = ''
       if (level.mode === 'timed') objective = '剩余 ' + Math.ceil(level.timeLeft) + ' 秒'
       else if (level.mode === 'escort') objective = '粮车 ' + Math.ceil(level.escortHp) + '/' + C.escortMaxHp
       else if (level.mode === 'defend') objective = '守城波次 ' + Math.min(4, level.defeatedEnemyCount() + 1) + '/4'
       if (objective) {
-        ctx.fillStyle = 'rgba(0,0,0,0.32)'; roundRect(ctx, 12, 90, 150, 28, 14); ctx.fill()
-        ctx.fillStyle = '#ffffff'; ctx.fillText(objective, 23, 104)
+        ctx.fillStyle = 'rgba(0,0,0,0.62)'; roundRect(ctx, 12, 134, 180, 32, 14); ctx.fill()
+        ctx.fillStyle = '#ffffff'; ctx.fillText(objective, 23, 150)
       }
     }
   }
@@ -778,7 +782,7 @@
 
   Renderer.prototype.title = function (text, y, size, color) {
     strokeText(this.ctx, text, this.w / 2, y,
-      'bold ' + Math.round(this.w * size) + 'px Arial', color || '#fff')
+      'bold ' + Math.round(this.w * size) + 'px Arial', color || '#fff', this.w)
   }
 
   Renderer.prototype.line = function (text, y, size, color) {
