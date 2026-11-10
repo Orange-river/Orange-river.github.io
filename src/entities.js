@@ -85,10 +85,11 @@
     })
   }
 
-  Fx.prototype.addFloat = function (text, x, y, color, big) {
+  Fx.prototype.addFloat = function (text, x, y, color, big, duration) {
+    var life = duration || 0.9
     this.floaters.push({
       text: text, x: x, y: y,
-      vy: -58, life: 0.9, maxLife: 0.9,
+      vy: -58, life: life, maxLife: life,
       color: color || C.color.gold, big: !!big
     })
   }

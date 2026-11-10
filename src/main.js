@@ -190,13 +190,13 @@
       } else if (e.type === 'gate') {
         this.player.addPulse()
         this.fx.addRing(e.x, e.y, '#7dff9b')
-        this.fx.addFloat(e.option.label + ' → ' + e.value, e.x, e.y - 35, '#b9ffc7', true)
+        this.fx.addFloat('选择 ' + e.option.label + ' → ' + e.value + '兵', e.x, e.y - 35, '#b9ffc7', true, 1.6)
       } else if (e.type === 'troop') {
         this.fx.addRing(e.x, e.y, Content.unit(e.unitType).color)
-        this.fx.addFloat('切换' + Content.unit(e.unitType).name, e.x, e.y - 35, Content.unit(e.unitType).color, true)
+        this.fx.addFloat('切换' + Content.unit(e.unitType).name, e.x, e.y - 35, Content.unit(e.unitType).color, true, 1.6)
       } else if (e.type === 'event') {
         this.fx.addBurst(e.x, e.y, C.color.gold, 18)
-        this.fx.addFloat(e.outcome.text, e.x, e.y - 35, C.color.gold, true)
+        this.fx.addFloat(Content.eventTypes[e.item.eventKind].label + ' · ' + e.outcome.text, e.x, e.y - 35, C.color.gold, true, 1.6)
       } else if (e.type === 'waveClear') {
         this.fx.addBurst(e.x, e.y, C.color.enemy, 24)
         this.fx.addFloat('全歼', e.x, e.y - 40, '#ffd9d9', true)
