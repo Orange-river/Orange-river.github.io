@@ -260,17 +260,21 @@
     var castleZ = 4350
     var pickups = []
     var z = CFG.pickupFirstZ
-    var idx = 0
+    // 每一排左右各一张牌，数值互有高低，玩家每一排都要做“选哪边”的决定
     while (z < castleZ - 280) {
-      var isRight = idx % 4 === 3
-      var value = isRight ? CFG.rightBigValues[idx % CFG.rightBigValues.length] : CFG.leftValue
-      pickups.push({ type: 'pickup', z: Math.round(z), side: isRight ? 'R' : 'L',
-        op: '+', value: value, label: '+' + value, _done: false })
+      var lv = pick(rng, CFG.leftValues), rv = pick(rng, CFG.rightValues)
+      pickups.push({ type: 'pickup', z: Math.round(z), side: 'L', op: '+', value: lv, label: '+' + lv, _done: false })
+      pickups.push({ type: 'pickup', z: Math.round(z), side: 'R', op: '+', value: rv, label: '+' + rv, _done: false })
       z += CFG.pickupSpacing
-      idx++
     }
 
-    var support = makeSupportItems(levelIndex, rng).concat(pickups).sort(function (a, b) { return a.z - b.z })
+    var byZ = function (a, b) {
+      var d = a.z - b.z
+      if (d) return d
+      var sa = a.side || '', sb = b.side || ''
+      return sa < sb ? -1 : (sa > sb ? 1 : 0)
+    }
+    var support = makeSupportItems(levelIndex, rng).concat(pickups).sort(byZ)
     assignFenceLeads(support)
     // 难度曲线：前两关略松让玩家熟悉栅栏选边，第 3 关起与原口径一致
     var diff = clamp(0.9 + levelIndex * 0.05, 0.9, 1.3) * scale
@@ -320,8 +324,15 @@
         // 先结算已经贴身的栅栏（栅栏起点可能早于本节点的交战距离）
         while (fenced.length && fenceStart(fenced[0]) < sp.z && fenced[0].z <= nd.z - CFG.engageRange) decideFence(fenced.shift(), nd)
         if (isFenced(sp)) { if (fenced.length && fenced[0] === sp) decideFence(fenced.shift(), nd) }
-        else if (sp.type === 'pickup') {
-          if (sp.z > lockUntil || sp.side === lockedSide) addArmyUnits(simArmy, Math.round(sp.value * mods.recruit))
+        else if (sp.type === 'pickup' && sp.side === 'L') {
+          // 两路成对：自由区取更大的一张，栅栏内只能取锁定侧那张
+          var mate = support[si + 1]
+          var pairR = (mate && mate.type === 'pickup' && mate.z === sp.z) ? mate.value : 0
+          var best = 0
+          if (sp.z > lockUntil) best = Math.max(sp.value, pairR)
+          else if (lockedSide === 'L') best = sp.value
+          else if (lockedSide === 'R') best = pairR
+          if (best > 0) addArmyUnits(simArmy, Math.round(best * mods.recruit))
         }
         si++
       }
