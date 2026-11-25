@@ -205,26 +205,56 @@
   }
 
   function makeSupportItems (levelIndex, rng) {
+    // 门放在两组兵牌的中点，避免门牌与紧邻的兵牌在画面里互相遮挡
     var gates = [
-      { type: 'gate', z: 950, left: { op: '*', value: CFG.gateMultiplier, label: '×' + CFG.gateMultiplier },
+      { type: 'gate', z: 895, left: { op: '*', value: CFG.gateMultiplier, label: '×' + CFG.gateMultiplier },
         right: { op: '+', value: CFG.gateAddition, label: '+' + CFG.gateAddition }, _done: false },
-      { type: 'gate', z: 2700, left: { op: '*', value: CFG.gateMultiplier, label: '×' + CFG.gateMultiplier },
+      { type: 'gate', z: 2695, left: { op: '*', value: CFG.gateMultiplier, label: '×' + CFG.gateMultiplier },
         right: { op: '+', value: CFG.gateAddition, label: '+' + CFG.gateAddition }, _done: false }
     ]
     var troopGates = [
-      { type: 'troopGate', z: 1200, left: 'shield', right: 'archer', _done: false },
-      { type: 'troopGate', z: 3250, left: 'cavalry', right: 'shield', _done: false }
+      { type: 'troopGate', z: 1495, left: 'shield', right: 'archer', _done: false },
+      { type: 'troopGate', z: 3295, left: 'cavalry', right: 'shield', _done: false }
     ]
     var kinds = ['cache', 'reinforce', 'ambush']
-    var events = [1850, 3420].map(function (z, i) {
+    // 事件放在两道栅栏之间的自由区，不会因为被锁边而吃不到
+    var events = [1850, 3595].map(function (z, i) {
       var kind = kinds[Math.floor(rng() * kinds.length)]
       return { type: 'event', z: z, side: (levelIndex + i) % 2 ? 'R' : 'L', eventKind: kind, _done: false }
     })
     return gates.concat(troopGates, events)
   }
 
-  /** 生成一关并用“全收兵牌 + 更优门选项 + 更优兵种”验证一条可通路线。 */
-  function buildLevel (levelIndex, scale) {
+  function isFenced (item) { return item.type === 'gate' || item.type === 'troopGate' }
+
+  // 栅栏区间：从门前 fenceLead 开始，延伸到门后 fenceTail
+  function fenceStart (item) { return item.z - (item.fenceLead || CFG.fenceLeadMin) }
+  function fenceEnd (item) { return item.z + CFG.fenceTail }
+
+  /**
+   * 给每道大奖励门分配栅栏长度（需按 z 升序传入）。
+   * 最长 fenceLeadMax；与上一道栅栏之间必须留出 fenceGap 的自由区，但不少于 fenceLeadMin，
+   * 保证门进入可收取范围前栅栏已贴身。
+   */
+  function assignFenceLeads (sortedItems) {
+    var prevEnd = -Infinity
+    for (var i = 0; i < sortedItems.length; i++) {
+      var it = sortedItems[i]
+      if (!isFenced(it)) continue
+      var room = it.z - prevEnd - CFG.fenceGap
+      it.fenceLead = clamp(room, CFG.fenceLeadMin, CFG.fenceLeadMax)
+      prevEnd = fenceEnd(it)
+    }
+  }
+
+  /** 生成一关并用“栅栏内按更优一侧选边 + 该侧兵牌全收”验证一条可通路线；upgrades 为玩家当前成长，用于让敌人跟上玩家强度。 */
+  function buildLevel (levelIndex, scale, upgrades) {
+    upgrades = upgrades || {}
+    // 只取输出类成长：敌人血量与仿真输出同步放大，相对挑战保持与第 1 关一致；体质仍是玩家自己的防御优势
+    var outMods = buildModifiers(upgrades)
+    var mods = { damage: outMods.damage, fireRate: outMods.fireRate, recruit: outMods.recruit }
+    var attackLevel = upgrades.attackLevel || 0
+    var hpPerUnit = 1
     var rng = mulberry32(20261106 + levelIndex * 9973)
     var start = CFG.startCount + Math.min(levelIndex, 6) * 3
     var castleZ = 4350
@@ -241,41 +271,70 @@
     }
 
     var support = makeSupportItems(levelIndex, rng).concat(pickups).sort(function (a, b) { return a.z - b.z })
-    var diff = clamp(1 + levelIndex * 0.05, 1, 1.3) * scale
+    assignFenceLeads(support)
+    // 难度曲线：前两关略松让玩家熟悉栅栏选边，第 3 关起与原口径一致
+    var diff = clamp(0.9 + levelIndex * 0.05, 0.9, 1.3) * scale
     var nodes = nodeTemplate()
-    var simArmy = { count: start, hpPerUnit: 1, hp: start }
+    var simArmy = { count: start, hpPerUnit: hpPerUnit, hp: start * hpPerUnit }
     var simType = 'shield'
     var si = 0
     var solvable = true
     var unitCycle = ['cavalry', 'shield', 'archer', 'cavalry']
+    var fenced = support.filter(isFenced)
+    var lockedSide = null
+    var lockUntil = -1
+
+    // 栅栏内只能走一侧：该侧的兵牌收益计入选边比较
+    var sideGain = function (f, side) {
+      var gain = 0
+      for (var k = 0; k < support.length; k++) {
+        var sp0 = support[k]
+        if (sp0.z > fenceEnd(f)) break
+        if (sp0.type === 'pickup' && sp0.side === side && sp0.z > fenceStart(f)) gain += sp0.value
+      }
+      return gain
+    }
+    // 抵达栅栏起点时定边：倍率门比两侧结果，兵种门比克制关系，持平时取兵牌收益高的一侧
+    var decideFence = function (f, nd) {
+      if (f.type === 'gate') {
+        var l = applyGate(simArmy.count, f.left) + sideGain(f, 'L')
+        var r = applyGate(simArmy.count, f.right) + sideGain(f, 'R')
+        lockedSide = l >= r ? 'L' : 'R'
+        applyArmyGate(simArmy, lockedSide === 'L' ? f.left : f.right)
+      } else {
+        var ls = unitCounter(f.left, nd.unitType)
+        var rs = unitCounter(f.right, nd.unitType)
+        var ss = unitCounter(simType, nd.unitType)
+        lockedSide = ls > rs ? 'L' : (rs > ls ? 'R' : (sideGain(f, 'L') >= sideGain(f, 'R') ? 'L' : 'R'))
+        var pickScore = unitCounter(lockedSide === 'L' ? f.left : f.right, nd.unitType)
+        if (pickScore >= ss) simType = lockedSide === 'L' ? f.left : f.right
+      }
+      lockUntil = fenceEnd(f)
+    }
 
     for (var ni = 0; ni < nodes.length; ni++) {
       var nd = nodes[ni]
       nd.unitType = unitCycle[(levelIndex + ni) % unitCycle.length]
       while (si < support.length && support[si].z <= nd.z - CFG.engageRange) {
         var sp = support[si]
-        if (sp.type === 'pickup') addArmyUnits(simArmy, sp.value)
-        else if (sp.type === 'gate') {
-          var leftCount = applyGate(simArmy.count, sp.left)
-          var rightCount = applyGate(simArmy.count, sp.right)
-          applyArmyGate(simArmy, leftCount >= rightCount ? sp.left : sp.right)
-        } else if (sp.type === 'troopGate') {
-          var leftScore = unitCounter(sp.left, nd.unitType)
-          var rightScore = unitCounter(sp.right, nd.unitType)
-          var stayScore = unitCounter(simType, nd.unitType)
-          if (leftScore >= rightScore && leftScore >= stayScore) simType = sp.left
-          else if (rightScore >= stayScore) simType = sp.right
+        // 先结算已经贴身的栅栏（栅栏起点可能早于本节点的交战距离）
+        while (fenced.length && fenceStart(fenced[0]) < sp.z && fenced[0].z <= nd.z - CFG.engageRange) decideFence(fenced.shift(), nd)
+        if (isFenced(sp)) { if (fenced.length && fenced[0] === sp) decideFence(fenced.shift(), nd) }
+        else if (sp.type === 'pickup') {
+          if (sp.z > lockUntil || sp.side === lockedSide) addArmyUnits(simArmy, Math.round(sp.value * mods.recruit))
         }
         si++
       }
       var hp
+      // 敌人血量/数量按玩家输出等比放大（只跟攻击、伤害与攻速，不跟防御），使每一关的相对挑战与第 1 关一致
+      var power = attackMultiplier(attackLevel) * (mods.damage || 1) * (mods.fireRate || 1) * diff
       if (nd.type === 'wave') {
-        nd.count = Math.max(4, Math.round(simArmy.count * nd.factor * diff))
+        nd.count = Math.max(4, Math.round(simArmy.count * nd.factor * power))
         nd.centerRatio = 0.5
         nd.widthRatio = CFG.waveColsRatio
         hp = nd.count
       } else {
-        nd.hp = Math.max(20, Math.round(simArmy.count * nd.hpFactor * diff))
+        nd.hp = Math.max(20, Math.round(simArmy.count * nd.hpFactor * power))
         nd.maxHp = nd.hp
         nd.centerRatio = 0.5
         nd.widthRatio = 0.5
@@ -283,9 +342,10 @@
       }
       var result = simulateBattle(simArmy.count, hp, {
         startHp: simArmy.hp, playerType: simType, enemyType: nd.unitType,
-        skill: nd.skill, boss: nd.boss, maxHp: nd.maxHp || hp
+        skill: nd.skill, boss: nd.boss, maxHp: nd.maxHp || hp,
+        attackLevel: attackLevel, modifiers: mods
       })
-      simArmy = { count: result.count, hpPerUnit: 1, hp: result.hp }
+      simArmy = { count: result.count, hpPerUnit: hpPerUnit, hp: result.hp }
       if (!result.won || simArmy.count <= 0) { solvable = false; break }
     }
 
@@ -300,13 +360,13 @@
     }
   }
 
-  function generateLevel (levelIndex) {
+  function generateLevel (levelIndex, upgrades) {
     var scale = 1
-    var data = buildLevel(levelIndex, scale)
+    var data = buildLevel(levelIndex, scale, upgrades)
     var tries = 0
     while (!data.solvable && tries < 8) {
       scale *= 0.8
-      data = buildLevel(levelIndex, scale)
+      data = buildLevel(levelIndex, scale, upgrades)
       tries++
     }
     return data
@@ -350,6 +410,7 @@
     attackMultiplier: attackMultiplier, armyHp: armyHp, addArmyUnits: addArmyUnits, damageArmy: damageArmy,
     unitCounter: unitCounter, buildModifiers: buildModifiers, battleStep: battleStep,
     simulateBattle: simulateBattle, battleLoss: battleLoss, formationOffsets: formationOffsets,
+    isFenced: isFenced, fenceStart: fenceStart, fenceEnd: fenceEnd, assignFenceLeads: assignFenceLeads,
     buildLevel: buildLevel, generateLevel: generateLevel, resolveEvent: resolveEvent,
     talentChoices: talentChoices, equipmentOffers: equipmentOffers
   }

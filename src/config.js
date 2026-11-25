@@ -61,6 +61,16 @@
     gateMultiplier: 2,
     gateAddition: 25,
 
+    // 大奖励门的中线栅栏：贴身后不能再横穿，只能吃到所在一侧
+    fenceLeadMax: 220,        // 栅栏从门前多远开始（逻辑纵深）
+    fenceLeadMin: 150,        // 最短长度：保证门进入可收取范围前栅栏已经贴身
+    fenceTail: 150,           // 栅栏延伸到门后多远（盖住门后 75 处兵牌的收取窗口，防止栅栏一结束就滑去另一侧）
+    fenceGap: 240,            // 相邻两道栅栏之间必须留出的自由区（人群纵深约 140 + 约 1 秒换边时间）
+    fenceHalfRatio: 0.020,    // 栅栏半宽（占屏宽）
+    fenceHeightRatio: 0.105,  // 栅栏高度（占屏宽）
+    fenceStep: 44,            // 立柱间距（逻辑纵深）
+    pickupFlyTime: 0.28,      // 收到的兵牌飞向队伍的动画时长（秒）
+
     // 人群
     startCount: 18,          // 初始兵力
     maxDrawnUnits: 140,      // 单队最多绘制的小人数量，超出靠头顶数字体现（控性能）
@@ -116,6 +126,12 @@
       button: '#22b573',
       buttonDark: '#178f59',
       gold: '#ffd34d',
+      // 大奖励门的中线木栅栏与红旗
+      fenceWood: '#5d3a1c',
+      fenceRail: '#9a6531',
+      fencePost: '#7a4a22',
+      fenceFlag: '#e8452f',
+      fenceFlagDark: '#a82a1c',
       bone: '#f4f2ea',
       smoke: 'rgba(170,158,138,0.55)'
     }
