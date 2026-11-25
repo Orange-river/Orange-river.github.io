@@ -249,21 +249,24 @@
     ctx.fill()
   }
 
-  // 椭圆盘人群（玩家用）；兵越多横向间距自动收窄，且整阵约束在跑道内不溢出屏幕
-  Renderer.prototype.crowd = function (centerX, baseZ, count, colors, phase, scaleMul) {
+  // 椭圆盘人群（玩家用）；兵越多横向间距自动收窄，且整阵约束在给定边界内（栅栏贴身时为半侧跑道）
+  Renderer.prototype.crowd = function (centerX, baseZ, count, colors, phase, scaleMul, bounds) {
     var w = this.w
     var level = this.level
     var drawN = Math.min(count, C.maxDrawnUnits)
     var cols = Math.round(L.clamp(Math.sqrt(drawN) * 1.2, 4, 12))
-    var tw = level.trackWidth()
     var tl = level.trackLeft()
-    // 阵型最宽不超过跑道的 92%，兵多时自动压紧横向间距
-    var gapX = Math.min(w * C.formationGapRatio, (tw * 0.92) / Math.max(1, cols - 1))
+    var tw = level.trackWidth()
+    var limL = bounds ? bounds.minX : tl
+    var limR = bounds ? bounds.maxX : tl + tw
+    var avail = Math.max(40, limR - limL)
+    // 阵型最宽不超过可用宽度的 92%，兵多时自动压紧横向间距
+    var gapX = Math.min(w * C.formationGapRatio, (avail * 0.92) / Math.max(1, cols - 1))
     var gapZ = w * C.formationDepthGapRatio
     var offs = L.formationOffsets(drawN, gapX, gapZ)
-    // 靠边时把整阵中心向内收，保证左右缘都在跑道内
+    // 靠边时把整阵中心向内收，保证左右缘都在边界内
     var rowW = (cols - 1) * gapX
-    centerX = L.clamp(centerX, tl + rowW / 2 + 2, tl + tw - rowW / 2 - 2)
+    centerX = L.clamp(centerX, limL + rowW / 2 + 2, limR - rowW / 2 - 2)
     var units = []
     for (var i = 0; i < offs.length; i++) {
       var pr = level.project(baseZ + offs[i].dz)
@@ -302,7 +305,7 @@
       dark: C.color.playerDark, skin: C.color.playerSkin
     }
     var scaleMul = 1 + player.pulse * 0.14
-    var units = this.crowd(player.x, level.traveled, player.count, palette, player.phase, scaleMul)
+    var units = this.crowd(player.x, level.traveled, player.count, palette, player.phase, scaleMul, level.crowdBounds(player))
     if (player.count > 0 && units.length) {
       var top = units[0]
       for (var i = 1; i < units.length; i++) if (units[i].y < top.y) top = units[i]
@@ -348,14 +351,26 @@
     }
   }
 
+  // 被收下的牌飞向队伍：返回插值后的位置、缩放与透明度
+  Renderer.prototype.flyPos = function (item, cx, sy, s) {
+    if (item._fly == null || !this.playerRef) return { cx: cx, sy: sy, s: s, alpha: 1 }
+    var t = L.clamp(item._fly, 0, 1)
+    var e = t * t * (3 - 2 * t)
+    var w = this.w
+    var px = this.playerRef.x, py = this.level.groundY - w * 0.10
+    return { cx: cx + (px - cx) * e, sy: sy + (py - sy) * e, s: s * (1 - 0.55 * e), alpha: 1 - e * 0.6 }
+  }
+
   // 兵牌：立体小石碑，蓝 +1 / 黄高值，立在左右路边
   Renderer.prototype.pickup = function (item) {
     var ctx = this.ctx, w = this.w
     var level = this.level
     var pr = item._proj || level.project(item.z - (item._adv || 0))
-    var s = pr.s
-    var cx = level.projX(level.pickupAnchorX(item), s)
-    var sy = pr.sy
+    var fp = this.flyPos(item, level.projX(level.pickupAnchorX(item), pr.s), pr.sy, pr.s)
+    var s = fp.s
+    var cx = fp.cx
+    var sy = fp.sy
+    ctx.globalAlpha = fp.alpha
     var pw = w * 0.078 * s
     var ph = w * 0.125 * s
     var x = cx - pw / 2
@@ -385,26 +400,81 @@
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.fillText(item.label, cx - 1 * s, top + ph * 0.58)
+    ctx.globalAlpha = 1
   }
 
-  // 左右倍率门：两片独立路牌，玩家贴哪边就执行哪边
+  // 门牌状态：已选边高亮、被栅栏锁死的一侧闪烁提示、另一侧变暗
+  Renderer.prototype.gateState = function (item, side) {
+    if (item._chosen) return item._chosen === side ? 'chosen' : 'off'
+    if (item._missed) return 'off'
+    if (this.level && this.level.fence === item && item._fenceSide) return item._fenceSide === side ? 'locked' : 'off'
+    return 'normal'
+  }
+
+  // 门牌通用外框：按状态调透明度、描边与勾选标记
+  Renderer.prototype.gateFrame = function (ctx, x, y, pw, ph, s, state, fill, stroke) {
+    var pulse = 0.5 + 0.5 * Math.sin(this.clock / 150)
+    ctx.globalAlpha = state === 'off' ? 0.38 : 1
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'
+    roundRect(ctx, x + 3 * s, y + 4 * s, pw, ph, 8 * s); ctx.fill()
+    ctx.fillStyle = fill
+    roundRect(ctx, x, y, pw, ph, 8 * s); ctx.fill()
+    if (state === 'locked' || state === 'chosen') {
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = Math.max(2, (state === 'chosen' ? 4 : 3 + pulse * 2) * s)
+    } else {
+      ctx.strokeStyle = stroke
+      ctx.lineWidth = Math.max(1, 2.4 * s)
+    }
+    roundRect(ctx, x, y, pw, ph, 8 * s); ctx.stroke()
+    if (state === 'chosen') {
+      var r = Math.max(7, 11 * s)
+      ctx.fillStyle = C.color.gold
+      ctx.beginPath(); ctx.arc(x + pw - r * 0.4, y + r * 0.4, r, 0, Math.PI * 2); ctx.fill()
+      ctx.fillStyle = '#3a2a00'
+      ctx.font = 'bold ' + Math.round(r * 1.3) + 'px Arial'
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+      ctx.fillText('✓', x + pw - r * 0.4, y + r * 0.45)
+    }
+    ctx.globalAlpha = 1
+  }
+
+  // 左右倍率门：两片独立路牌，中间由中线栅栏隔开，玩家只能吃到所在一侧
   Renderer.prototype.gate = function (item) {
     var ctx = this.ctx, w = this.w, level = this.level
     var pr = item._proj || level.project(item.z), s = pr.s
     var pw = w * 0.25 * s, ph = w * 0.16 * s
+    var count = this.playerRef ? Math.round(this.playerRef.count) : 0
+    var better = null
+    if (count > 0 && !item._done) {
+      var lc = L.applyGate(count, item.left), rc = L.applyGate(count, item.right)
+      if (lc !== rc) better = lc > rc ? 'L' : 'R'
+    }
     for (var i = 0; i < 2; i++) {
       var side = i === 0 ? 'L' : 'R'
       var option = side === 'L' ? item.left : item.right
       var cx = level.projX(level.sideAnchorX(side), s)
       var x = cx - pw / 2, y = pr.sy - ph
-      ctx.fillStyle = 'rgba(0,0,0,0.25)'
-      roundRect(ctx, x + 3 * s, y + 4 * s, pw, ph, 8 * s); ctx.fill()
-      ctx.fillStyle = side === 'L' ? '#1fae67' : '#257fd1'
-      roundRect(ctx, x, y, pw, ph, 8 * s); ctx.fill()
-      ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = Math.max(1, 3 * s)
-      roundRect(ctx, x, y, pw, ph, 8 * s); ctx.stroke()
-      strokeText(ctx, option.label, cx, y + ph * 0.54,
-        'bold ' + Math.max(14, Math.round(w * 0.11 * s)) + 'px Arial', '#ffffff', w)
+      var state = this.gateState(item, side)
+      this.gateFrame(ctx, x, y, pw, ph, s, state, side === 'L' ? '#1fae67' : '#257fd1', 'rgba(255,255,255,0.7)')
+      ctx.globalAlpha = state === 'off' ? 0.38 : 1
+      strokeText(ctx, option.label, cx, y + ph * 0.42,
+        'bold ' + Math.max(14, Math.round(w * 0.105 * s)) + 'px Arial', '#ffffff', w)
+      // 实时显示选这一边后的兵力，帮助比较；门已结算后改为静态结论，不再跟随当前兵力刷新
+      var sub = null
+      if (item._done) sub = state === 'chosen' ? '已选择' : (item._missed ? '已错过' : '已放弃')
+      else if (count > 0) sub = count + ' → ' + L.applyGate(count, option)
+      if (sub) {
+        strokeText(ctx, sub, cx, y + ph * 0.8,
+          'bold ' + Math.max(10, Math.round(w * 0.042 * s)) + 'px Arial', '#fff6c8', w)
+      }
+      if (better === side) {
+        ctx.fillStyle = C.color.gold
+        ctx.beginPath()
+        ctx.moveTo(cx, y - 14 * s); ctx.lineTo(cx - 7 * s, y - 3 * s); ctx.lineTo(cx + 7 * s, y - 3 * s)
+        ctx.closePath(); ctx.fill()
+      }
+      ctx.globalAlpha = 1
     }
   }
 
@@ -415,21 +485,101 @@
     for (var i = 0; i < 2; i++) {
       var side = i === 0 ? 'L' : 'R'
       var type = side === 'L' ? item.left : item.right
+      var unit = Content.unit(type)
       var cx = level.projX(level.sideAnchorX(side), s)
       var x = cx - pw / 2, y = pr.sy - ph
-      ctx.fillStyle = Content.unit(type).color
-      roundRect(ctx, x, y, pw, ph, 8 * s); ctx.fill()
-      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = Math.max(1, 2 * s)
-      roundRect(ctx, x, y, pw, ph, 8 * s); ctx.stroke()
-      strokeText(ctx, Content.unit(type).name, cx, y + ph * 0.54,
-        'bold ' + Math.max(12, Math.round(w * 0.075 * s)) + 'px Arial', '#ffffff', w)
+      var state = this.gateState(item, side)
+      this.gateFrame(ctx, x, y, pw, ph, s, state, unit.color, '#ffffff')
+      ctx.globalAlpha = state === 'off' ? 0.38 : 1
+      strokeText(ctx, unit.name, cx, y + ph * 0.4,
+        'bold ' + Math.max(12, Math.round(w * 0.072 * s)) + 'px Arial', '#ffffff', w)
+      var beats = Content.unit(unit.strongAgainst)
+      if (beats) {
+        strokeText(ctx, '克 ' + beats.name, cx, y + ph * 0.78,
+          'bold ' + Math.max(10, Math.round(w * 0.040 * s)) + 'px Arial', '#fff6c8', w)
+      }
+      ctx.globalAlpha = 1
     }
+  }
+
+  // 中线木栅栏的一段：深色栏体 + 两道亮色横栏 + 立柱与红旗
+  Renderer.prototype.fencePost = function (cx, y, s, dir) {
+    var ctx = this.ctx, w = this.w, col = C.color
+    var H = w * C.fenceHeightRatio, half = w * C.fenceHalfRatio
+    var pw = Math.max(2, half * 1.5 * s), ph = Math.max(4, H * 1.16 * s)
+    // 地面阴影
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'
+    fillEllipse(ctx, cx + pw * 0.6, y, pw * 1.6, pw * 0.5, 'rgba(0,0,0,0.25)')
+    // 柱身
+    ctx.fillStyle = col.fencePost
+    roundRect(ctx, cx - pw / 2, y - ph, pw, ph, pw * 0.3); ctx.fill()
+    ctx.fillStyle = 'rgba(255,255,255,0.16)'
+    ctx.fillRect(cx - pw * 0.34, y - ph + pw * 0.3, pw * 0.26, Math.max(1, ph - pw * 0.6))
+    // 尖顶
+    ctx.fillStyle = col.fenceWood
+    ctx.beginPath()
+    ctx.moveTo(cx - pw * 0.5, y - ph); ctx.lineTo(cx + pw * 0.5, y - ph); ctx.lineTo(cx, y - ph - pw * 1.1)
+    ctx.closePath(); ctx.fill()
+    // 红旗：旗杆 + 随时间飘动的三角旗
+    var poleH = Math.max(6, pw * 3.4)
+    var topY = y - ph - pw * 1.1
+    ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = Math.max(1, pw * 0.22)
+    ctx.beginPath(); ctx.moveTo(cx, topY); ctx.lineTo(cx, topY - poleH); ctx.stroke()
+    var flut = Math.sin(this.clock / 190 + s * 7) * pw * 0.35
+    var fw = Math.max(6, pw * 3.6), fh = Math.max(4, pw * 1.6)
+    ctx.fillStyle = col.fenceFlag
+    ctx.beginPath()
+    ctx.moveTo(cx, topY - poleH)
+    ctx.lineTo(cx + dir * fw, topY - poleH + fh * 0.5 + flut)
+    ctx.lineTo(cx, topY - poleH + fh)
+    ctx.closePath(); ctx.fill()
+    ctx.strokeStyle = col.fenceFlagDark; ctx.lineWidth = 1
+    ctx.stroke()
+  }
+
+  Renderer.prototype.fenceSeg = function (seg) {
+    var ctx = this.ctx, w = this.w, level = this.level, col = C.color
+    var pa = level.project(seg.za), pb = level.project(seg.zb)
+    var sa = Math.max(0.02, pa.s), sb = Math.max(0.02, pb.s)
+    var ya = pa.sy, yb = pb.sy
+    var cx = w / 2
+    var H = w * C.fenceHeightRatio, half = w * C.fenceHalfRatio
+    var quad = function (pts, color) {
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.moveTo(pts[0][0], pts[0][1])
+      for (var k = 1; k < pts.length; k++) ctx.lineTo(pts[k][0], pts[k][1])
+      ctx.closePath(); ctx.fill()
+    }
+    var hex = function (hTop, hBot, color) {
+      quad([
+        [cx - half * sa, ya - hTop * H * sa], [cx + half * sa, ya - hTop * H * sa],
+        [cx + half * sb, yb - hTop * H * sb], [cx + half * sb, yb - hBot * H * sb],
+        [cx - half * sb, yb - hBot * H * sb], [cx - half * sa, ya - hBot * H * sa]
+      ], color)
+    }
+    // 地面投影
+    ctx.globalAlpha = 0.18
+    quad([[cx - half * 2.4 * sa, ya], [cx + half * 2.4 * sa, ya], [cx + half * 2.4 * sb, yb], [cx - half * 2.4 * sb, yb]], '#000000')
+    ctx.globalAlpha = 1
+    // 栏体
+    hex(1.0, 0, col.fenceWood)
+    // 两道横栏
+    hex(0.84, 0.70, col.fenceRail)
+    hex(0.50, 0.36, col.fenceRail)
+    // 远端立柱（红旗左右交替），近端收尾柱在最后一段补画
+    var idx = Math.round((seg.za - L.fenceStart(seg.item)) / C.fenceStep)
+    this.fencePost(cx, ya, sa, idx % 2 === 0 ? 1 : -1)
+    if (seg.zb >= L.fenceEnd(seg.item) - 0.5) this.fencePost(cx, yb, sb, 1)
   }
 
   Renderer.prototype.event = function (item) {
     var ctx = this.ctx, w = this.w, level = this.level
     var pr = item._proj || level.project(item.z), s = pr.s
-    var cx = level.projX(level.pickupAnchorX(item), s)
+    var fp = this.flyPos(item, level.projX(level.pickupAnchorX(item), s), pr.sy, s)
+    s = fp.s
+    var cx = fp.cx
+    ctx.globalAlpha = fp.alpha
     var def = Content.eventTypes[item.eventKind]
     var pw = w * 0.20 * s, ph = w * 0.16 * s
     var x = cx - pw / 2, y = pr.sy - ph
@@ -441,6 +591,7 @@
       'bold ' + Math.max(12, Math.round(w * 0.07 * s)) + 'px Arial', '#ffffff', w)
     strokeText(ctx, def.detail, cx, y + ph * 0.76,
       'bold ' + Math.max(10, Math.round(w * 0.038 * s)) + 'px Arial', '#fff4c8', w)
+    ctx.globalAlpha = 1
   }
 
   Renderer.prototype.escort = function (level) {
@@ -468,7 +619,7 @@
     var s = pr.s
     var cx = level.projX(b.cx, s)
     var sy = pr.sy
-    var breathe = item._engaged ? 1 + Math.sin(performance.now() / 120) * 0.02 : 1
+    var breathe = item._engaged ? 1 + Math.sin(this.clock / 120) * 0.02 : 1
     var rw = w * 0.26 * s * breathe
     var rh = w * 0.36 * s
     var bx = cx - rw / 2
@@ -794,20 +945,32 @@
     ctx.fillText(text, this.w / 2, y)
   }
 
-  // 主渲染：远→近绘制世界，玩家最后覆盖
+  // 主渲染：远→近绘制世界（含栅栏分段），玩家最后覆盖
   Renderer.prototype.world = function (level, player, fx, coins) {
     this.level = level
+    this.playerRef = player
+    this.clock = Date.now()
     this.background(level.traveled)
     var items = level.visibleItems()
+    var segs = level.fenceSegments()
+    var draws = []
     for (var i = 0; i < items.length; i++) {
       var it = items[i]
-      if (it.type === 'castle') this.castle(it)
-      else if (it.type === 'pickup') this.pickup(it)
-      else if (it.type === 'gate') this.gate(it)
-      else if (it.type === 'troopGate') this.troopGate(it)
-      else if (it.type === 'event') this.event(it)
-      else if (it.type === 'wave') this.wave(it)
-      else if (it.type === 'general') this.general(it)
+      draws.push({ key: it._proj ? it._proj.dz : it.z - level.traveled, item: it })
+    }
+    for (var j = 0; j < segs.length; j++) draws.push({ key: segs[j].dz - 0.5, seg: segs[j] })
+    draws.sort(function (a, b) { return b.key - a.key })
+    for (var k = 0; k < draws.length; k++) {
+      var dr = draws[k]
+      if (dr.seg) { this.fenceSeg(dr.seg); continue }
+      var item = dr.item
+      if (item.type === 'castle') this.castle(item)
+      else if (item.type === 'pickup') this.pickup(item)
+      else if (item.type === 'gate') this.gate(item)
+      else if (item.type === 'troopGate') this.troopGate(item)
+      else if (item.type === 'event') this.event(item)
+      else if (item.type === 'wave') this.wave(item)
+      else if (item.type === 'general') this.general(item)
     }
     this.escort(level)
     if (player.count > 0) this.player(player)

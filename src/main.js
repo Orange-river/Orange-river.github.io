@@ -114,11 +114,13 @@
       this.equipment = this.checkpoint.equipment.slice()
       this.talents = this.checkpoint.talents.slice()
     }
-    var data = this.level.load(idx)
-    this.player = new CR.Entities.Player(this.w, this.h, data.start, {
+    var upgrades = {
       attackLevel: this.attackLevel, vitalityLevel: this.vitalityLevel,
       equipment: this.equipment, talents: this.talents
-    })
+    }
+    // 敌人强度按玩家当前成长生成，避免升级后后期关卡失去挑战
+    var data = this.level.load(idx, upgrades)
+    this.player = new CR.Entities.Player(this.w, this.h, data.start, upgrades)
     this.saveCheckpoint()
     this.fx.clear()
     this.loseReason = 'army'
@@ -212,6 +214,8 @@
       } else if (e.type === 'lose') {
         this.loseReason = e.reason || 'army'
         this.state = S.LOSE
+      } else if (e.type === 'gateMiss') {
+        this.fx.addFloat('居中穿过 · 错过' + (e.item.type === 'gate' ? '倍率门' : '兵种门'), e.x, e.y, '#ffd0a8', false, 1.4)
       } else if (e.type === 'levelComplete') this.state = S.WIN
     }
   }
@@ -234,7 +238,7 @@
       r.line('武将技能 · Boss三阶段 · 随机事件', this.h * 0.38, 0.038)
       r.line('破军 / 护送 / 守城 / 限时 四关轮换', this.h * 0.44, 0.038)
       r.line('攻击体质成长 + 金币装备 + 天赋三选一', this.h * 0.50, 0.035, '#d8e5dc')
-      r.line('全程单机，不自动收兵', this.h * 0.57, 0.032, '#aebbb1')
+      r.line('大奖励门中间有栅栏，贴身后只能吃一侧', this.h * 0.57, 0.032, '#aebbb1')
       r.button(r.buttonRect(0.72), '开始游戏')
       return
     }
